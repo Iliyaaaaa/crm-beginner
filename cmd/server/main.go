@@ -15,9 +15,9 @@ import (
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 
-	"github.com/iliya/crm-service/internal/cache"
+	"github.com/iliya/crm-service/internal/adapter/postgres"
+	redisadapter "github.com/iliya/crm-service/internal/adapter/redis"
 	"github.com/iliya/crm-service/internal/domain"
-	"github.com/iliya/crm-service/internal/store"
 	pb "github.com/iliya/crm-service/proto/customerpb"
 )
 
@@ -25,15 +25,15 @@ const defaultDSN = "postgres://localhost:5432/crm?sslmode=disable"
 
 // customerServer implements the generated CustomerServiceServer interface.
 //
-// Compared with the in-memory version this struct lost its map, its nextID
-// counter and its mutex: the database now owns identity generation and
-// concurrency control.
+// Both dependencies are now INTERFACES from the domain package, not concrete
+// adapter types. That is dependency inversion: this handler no longer knows
+// that Postgres or Redis exist, so a test can hand it a fake instead.
 type customerServer struct {
 	pb.UnimplementedCustomerServiceServer
-	store *store.Store
+	repo domain.CustomerRepository
 	// cache may be nil, meaning caching is disabled. Every cache method is
 	// nil-safe, so no handler needs to check.
-	cache *cache.Cache
+	cache domain.CustomerCache
 }
 
 func (s *customerServer) CreateCustomer(
@@ -50,7 +50,10 @@ func (s *customerServer) CreateCustomer(
 	// ctx is passed straight through to the query. If the client's deadline
 	// expires or it hangs up, Postgres is told to abandon the statement
 	// instead of finishing work nobody is waiting for.
-	c, err := s.store.CreateCustomer(ctx, req.GetName(), req.GetEmail())
+	c, err := s.repo.Create(ctx, domain.Customer{
+		Name:  req.GetName(),
+		Email: req.GetEmail(),
+	})
 	switch {
 	case errors.Is(err, domain.ErrDuplicateEmail):
 		return nil, status.Errorf(codes.AlreadyExists, "email %q is already registered", req.GetEmail())
@@ -79,7 +82,7 @@ func (s *customerServer) GetCustomer(
 	}
 
 	// Step 2: on a miss, go to the real source of truth.
-	c, err := s.store.GetCustomer(ctx, req.GetId())
+	c, err := s.repo.GetByID(ctx, req.GetId())
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		// Deliberately NOT cached. Caching "this does not exist" is possible
@@ -111,7 +114,11 @@ func (s *customerServer) UpdateCustomer(
 		return nil, status.Error(codes.InvalidArgument, "email must not be empty")
 	}
 
-	c, err := s.store.UpdateCustomer(ctx, req.GetId(), req.GetName(), req.GetEmail())
+	c, err := s.repo.Update(ctx, domain.Customer{
+		ID:    req.GetId(),
+		Name:  req.GetName(),
+		Email: req.GetEmail(),
+	})
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		return nil, status.Errorf(codes.NotFound, "customer %d not found", req.GetId())
@@ -136,7 +143,7 @@ func (s *customerServer) DeleteCustomer(
 	ctx context.Context,
 	req *pb.DeleteCustomerRequest,
 ) (*pb.DeleteCustomerResponse, error) {
-	err := s.store.DeleteCustomer(ctx, req.GetId())
+	err := s.repo.Delete(ctx, req.GetId())
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		return nil, status.Errorf(codes.NotFound, "customer %d not found", req.GetId())
@@ -181,19 +188,26 @@ func main() {
 	dbCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	st, err := store.New(dbCtx, dsn)
+	// --- composition root: build the adapters, then inject them ------------
+
+	repo, err := postgres.NewCustomerRepository(dbCtx, dsn)
 	if err != nil {
 		log.Fatalf("database: %v", err)
 	}
-	defer st.Close()
+	defer repo.Close()
 	log.Println("connected to postgres")
 
 	// Redis is optional. With REDIS_URL unset the service runs uncached, which
 	// keeps `make server` working without a Redis instance. A cache is an
 	// optimisation, not a dependency - the service must be correct without it.
-	var rc *cache.Cache
+	//
+	// Note this stays a concrete *CustomerCache rather than the interface: a
+	// nil pointer stored in an interface makes the interface itself non-nil,
+	// so `cache == nil` checks would not fire. It works here only because the
+	// adapter's methods each check their nil receiver.
+	var rc *redisadapter.CustomerCache
 	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
-		rc, err = cache.New(dbCtx, redisURL)
+		rc, err = redisadapter.NewCustomerCache(dbCtx, redisURL)
 		if err != nil {
 			log.Fatalf("redis: %v", err)
 		}
@@ -209,7 +223,7 @@ func main() {
 	}
 
 	s := grpc.NewServer()
-	pb.RegisterCustomerServiceServer(s, &customerServer{store: st, cache: rc})
+	pb.RegisterCustomerServiceServer(s, &customerServer{repo: repo, cache: rc})
 	reflection.Register(s)
 
 	// Serve blocks, so it runs in its own goroutine and reports failures back
