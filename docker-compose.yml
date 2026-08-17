@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: crm
+      POSTGRES_USER: crm
+      POSTGRES_PASSWORD: crm
+    ports:
+      - "5432:5432"
+    volumes:
+      # Named volume: Postgres's data directory survives `docker compose down`.
+      - pgdata:/var/lib/postgresql/data
+      # The official postgres image auto-runs any .sql file found here, in
+      # filename order - but ONLY the very first time the data directory is
+      # empty. This is why our migrations are numbered 0001_, 0002_: the same
+      # ordering rule as before, just applied by Postgres's own entrypoint
+      # instead of us running `psql -f` by hand.
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crm -d crm"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    # Run as a pure in-memory cache. Redis persists to disk by default (RDB
+    # snapshots), which would let cached entries survive a restart inside the
+    # container's own filesystem - exactly what a cache should NOT do, since
+    # Postgres is the source of truth and a stale entry outliving a restart is
+    # a bug waiting to happen. --save "" disables snapshots, --appendonly no
+    # disables the write-ahead log.
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "6379:6379"
+    # Note: the redis image declares VOLUME /data internally, so Docker creates
+    # an anonymous volume there whether we ask for one or not. With snapshots
+    # disabled above nothing is ever written to it, so the cache really is
+    # in-memory only - verified by restarting redis and seeing the keys gone.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  server:
+    build: .
+    depends_on:
+      postgres:
+        # Wait for the healthcheck to pass, not just for the container to
+        # start. Postgres accepts TCP connections before it's actually ready
+        # to serve queries - starting the app on plain container-start would
+        # reintroduce the connect-before-ready race this avoids.
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # "postgres" and "redis" here are not localhost - they are the other
+      # services' names, resolved through Docker's internal DNS. Compare with
+      # the values used when running locally, which say "localhost" instead.
+      DATABASE_URL: postgres://crm:crm@postgres:5432/crm?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "50051:50051"
+
+volumes:
+  pgdata:

@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package customer;
+
+option go_package = "github.com/iliya/crm-service/proto/customerpb";
+
+service CustomerService {
+  rpc CreateCustomer(CreateCustomerRequest) returns (CreateCustomerResponse);
+  rpc GetCustomer(GetCustomerRequest) returns (GetCustomerResponse);
+  // UpdateCustomer replaces name and email (full replace, not a patch) and
+  // returns the row as it now stands - the same shape GetCustomer returns.
+  rpc UpdateCustomer(UpdateCustomerRequest) returns (GetCustomerResponse);
+  rpc DeleteCustomer(DeleteCustomerRequest) returns (DeleteCustomerResponse);
+}
+
+message CreateCustomerRequest {
+  string name  = 1;
+  string email = 2;
+}
+
+message CreateCustomerResponse {
+  int64  id      = 1;
+  string message = 2;
+}
+
+message GetCustomerRequest {
+  int64 id = 1;
+}
+
+message GetCustomerResponse {
+  int64  id    = 1;
+  string name  = 2;
+  string email = 3;
+  // RFC 3339 timestamps. Each field was added after the message already
+  // existed - a backward-compatible change, since old clients simply ignore
+  // fields they don't know about.
+  string created_at = 4;
+  string updated_at = 5;
+}
+
+message UpdateCustomerRequest {
+  int64  id    = 1;
+  string name  = 2;
+  string email = 3;
+}
+
+message DeleteCustomerRequest {
+  int64 id = 1;
+}
+
+message DeleteCustomerResponse {
+  string message = 1;
+}

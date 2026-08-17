@@ -1,0 +1,11 @@
+# Not needed inside the app image - db/migrations is mounted straight into
+# the postgres container instead (see docker-compose.yml), never copied here.
+db/
+
+# Docs and generated reports - irrelevant to the Go build, just bloat the
+# build context sent to the Docker daemon.
+*.md
+*.pdf
+
+.git/
+.DS_Store
