@@ -15,7 +15,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/iliya/crm-service/internal/store"
+	"github.com/iliya/crm-service/internal/domain"
 )
 
 // ttl is how long a cached customer stays valid before Redis evicts it.
@@ -64,9 +64,9 @@ func key(id int64) string {
 // A cache miss and a cache failure are deliberately indistinguishable to the
 // caller: both return false, and the caller simply falls through to the
 // database. Redis being down must never turn into a failed request.
-func (c *Cache) Get(ctx context.Context, id int64) (store.Customer, bool) {
+func (c *Cache) Get(ctx context.Context, id int64) (domain.Customer, bool) {
 	if c == nil {
-		return store.Customer{}, false
+		return domain.Customer{}, false
 	}
 
 	data, err := c.rdb.Get(ctx, key(id)).Bytes()
@@ -75,23 +75,23 @@ func (c *Cache) Get(ctx context.Context, id int64) (store.Customer, bool) {
 		// not a problem. Anything else is a real Redis failure, and is also
 		// treated as a miss.
 		if !errors.Is(err, redis.Nil) {
-			return store.Customer{}, false
+			return domain.Customer{}, false
 		}
-		return store.Customer{}, false
+		return domain.Customer{}, false
 	}
 
-	var cust store.Customer
+	var cust domain.Customer
 	if err := json.Unmarshal(data, &cust); err != nil {
 		// Corrupt or outdated entry (e.g. the struct changed shape between
 		// deploys). Treat as a miss; the fresh value will overwrite it.
-		return store.Customer{}, false
+		return domain.Customer{}, false
 	}
 	return cust, true
 }
 
 // Set stores a customer with the package TTL. Errors are ignored on purpose:
 // failing to populate a cache is not a reason to fail the user's request.
-func (c *Cache) Set(ctx context.Context, cust store.Customer) {
+func (c *Cache) Set(ctx context.Context, cust domain.Customer) {
 	if c == nil {
 		return
 	}

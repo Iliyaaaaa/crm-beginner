@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/iliya/crm-service/internal/cache"
+	"github.com/iliya/crm-service/internal/domain"
 	"github.com/iliya/crm-service/internal/store"
 	pb "github.com/iliya/crm-service/proto/customerpb"
 )
@@ -51,7 +52,7 @@ func (s *customerServer) CreateCustomer(
 	// instead of finishing work nobody is waiting for.
 	c, err := s.store.CreateCustomer(ctx, req.GetName(), req.GetEmail())
 	switch {
-	case errors.Is(err, store.ErrDuplicateEmail):
+	case errors.Is(err, domain.ErrDuplicateEmail):
 		return nil, status.Errorf(codes.AlreadyExists, "email %q is already registered", req.GetEmail())
 	case err != nil:
 		// Log the real cause, but do not leak database internals to the caller.
@@ -80,7 +81,7 @@ func (s *customerServer) GetCustomer(
 	// Step 2: on a miss, go to the real source of truth.
 	c, err := s.store.GetCustomer(ctx, req.GetId())
 	switch {
-	case errors.Is(err, store.ErrNotFound):
+	case errors.Is(err, domain.ErrNotFound):
 		// Deliberately NOT cached. Caching "this does not exist" is possible
 		// (negative caching) but then creating that customer would have to
 		// invalidate the negative entry too - more invalidation paths to get
@@ -112,9 +113,9 @@ func (s *customerServer) UpdateCustomer(
 
 	c, err := s.store.UpdateCustomer(ctx, req.GetId(), req.GetName(), req.GetEmail())
 	switch {
-	case errors.Is(err, store.ErrNotFound):
+	case errors.Is(err, domain.ErrNotFound):
 		return nil, status.Errorf(codes.NotFound, "customer %d not found", req.GetId())
-	case errors.Is(err, store.ErrDuplicateEmail):
+	case errors.Is(err, domain.ErrDuplicateEmail):
 		return nil, status.Errorf(codes.AlreadyExists, "email %q is already registered", req.GetEmail())
 	case err != nil:
 		log.Printf("UpdateCustomer: %v", err)
@@ -137,7 +138,7 @@ func (s *customerServer) DeleteCustomer(
 ) (*pb.DeleteCustomerResponse, error) {
 	err := s.store.DeleteCustomer(ctx, req.GetId())
 	switch {
-	case errors.Is(err, store.ErrNotFound):
+	case errors.Is(err, domain.ErrNotFound):
 		return nil, status.Errorf(codes.NotFound, "customer %d not found", req.GetId())
 	case err != nil:
 		log.Printf("DeleteCustomer: %v", err)
@@ -151,10 +152,10 @@ func (s *customerServer) DeleteCustomer(
 	return &pb.DeleteCustomerResponse{Message: "customer deleted"}, nil
 }
 
-// customerToProto converts a store.Customer into the wire message shared by
+// customerToProto converts a domain.Customer into the wire message shared by
 // GetCustomer and UpdateCustomer, so the two handlers don't repeat this
 // field-by-field mapping.
-func customerToProto(c store.Customer) *pb.GetCustomerResponse {
+func customerToProto(c domain.Customer) *pb.GetCustomerResponse {
 	return &pb.GetCustomerResponse{
 		Id:        c.ID,
 		Name:      c.Name,
