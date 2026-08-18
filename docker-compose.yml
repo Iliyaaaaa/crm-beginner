@@ -60,6 +60,13 @@ services:
       # the values used when running locally, which say "localhost" instead.
       DATABASE_URL: postgres://crm:crm@postgres:5432/crm?sslmode=disable
       REDIS_URL: redis://redis:6379/0
+      # ${VAR:-default} takes the value from your shell if set, otherwise the
+      # default. This is what makes `CACHE_TTL=45s docker compose up -d`
+      # actually reach the container - without the reference here, a host
+      # environment variable is invisible to it.
+      # Every knob is listed in internal/config/config.go.
+      CACHE_TTL: ${CACHE_TTL:-5m}
+      STARTUP_TIMEOUT: ${STARTUP_TIMEOUT:-10s}
     ports:
       - "50051:50051"
 

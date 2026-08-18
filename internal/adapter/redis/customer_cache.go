@@ -23,22 +23,23 @@ import (
 // Compile-time proof that this type satisfies the port.
 var _ domain.CustomerCache = (*CustomerCache)(nil)
 
-// ttl is how long a cached customer stays valid before Redis evicts it.
-//
-// This is the safety net for the invalidation bugs you WILL eventually write:
-// even if some code path forgets to invalidate, a stale entry disappears on its
-// own within this window. Shorter = fresher data but fewer cache hits.
-const ttl = 5 * time.Minute
-
 // CustomerCache wraps a Redis client. A nil *CustomerCache is valid and behaves
 // as "no cache".
 type CustomerCache struct {
 	rdb *redisclient.Client
+
+	// ttl is how long a cached customer stays valid before Redis evicts it.
+	//
+	// This is the safety net for the invalidation bugs you WILL eventually
+	// write: even if some code path forgets to invalidate, a stale entry
+	// disappears on its own within this window. Shorter = fresher data but
+	// fewer cache hits. Configured via CACHE_TTL.
+	ttl time.Duration
 }
 
 // NewCustomerCache parses a redis:// URL, connects, and verifies the server
 // responds.
-func NewCustomerCache(ctx context.Context, url string) (*CustomerCache, error) {
+func NewCustomerCache(ctx context.Context, url string, ttl time.Duration) (*CustomerCache, error) {
 	opt, err := redisclient.ParseURL(url)
 	if err != nil {
 		return nil, fmt.Errorf("parse redis url: %w", err)
@@ -48,7 +49,7 @@ func NewCustomerCache(ctx context.Context, url string) (*CustomerCache, error) {
 		rdb.Close()
 		return nil, fmt.Errorf("ping redis: %w", err)
 	}
-	return &CustomerCache{rdb: rdb}, nil
+	return &CustomerCache{rdb: rdb, ttl: ttl}, nil
 }
 
 // Close releases the connection pool.
@@ -106,7 +107,7 @@ func (c *CustomerCache) Set(ctx context.Context, cust domain.Customer) {
 	if err != nil {
 		return
 	}
-	c.rdb.Set(ctx, key(cust.ID), data, ttl)
+	c.rdb.Set(ctx, key(cust.ID), data, c.ttl)
 }
 
 // Invalidate removes a customer from the cache. This MUST be called after every
