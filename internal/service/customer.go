@@ -28,15 +28,19 @@ func NewCustomerService(repo domain.CustomerRepository, cache domain.CustomerCac
 }
 
 // Create validates input and inserts a new customer.
-func (s *CustomerService) Create(ctx context.Context, name, email string) (domain.Customer, error) {
+func (s *CustomerService) Create(ctx context.Context, name, rawEmail string) (domain.Customer, error) {
 	if strings.TrimSpace(name) == "" {
 		return domain.Customer{}, domain.ErrInvalidName
 	}
-	if strings.TrimSpace(email) == "" {
-		return domain.Customer{}, domain.ErrInvalidEmail
+	// NewEmail both validates and normalises (trim + lowercase), so
+	// "  Ali@Example.COM  " and "ali@example.com" become the same stored
+	// value and collide correctly against the UNIQUE constraint.
+	email, err := domain.NewEmail(rawEmail)
+	if err != nil {
+		return domain.Customer{}, err
 	}
 
-	c, err := s.repo.Create(ctx, domain.Customer{Name: name, Email: email})
+	c, err := s.repo.Create(ctx, domain.Customer{Name: name, Email: email.String()})
 	if err != nil {
 		return domain.Customer{}, err
 	}
@@ -69,15 +73,16 @@ func (s *CustomerService) GetByID(ctx context.Context, id int64) (domain.Custome
 
 // Update validates input, replaces name and email, and invalidates the cache.
 // This is a full replace (like HTTP PUT), not a partial patch.
-func (s *CustomerService) Update(ctx context.Context, id int64, name, email string) (domain.Customer, error) {
+func (s *CustomerService) Update(ctx context.Context, id int64, name, rawEmail string) (domain.Customer, error) {
 	if strings.TrimSpace(name) == "" {
 		return domain.Customer{}, domain.ErrInvalidName
 	}
-	if strings.TrimSpace(email) == "" {
-		return domain.Customer{}, domain.ErrInvalidEmail
+	email, err := domain.NewEmail(rawEmail)
+	if err != nil {
+		return domain.Customer{}, err
 	}
 
-	c, err := s.repo.Update(ctx, domain.Customer{ID: id, Name: name, Email: email})
+	c, err := s.repo.Update(ctx, domain.Customer{ID: id, Name: name, Email: email.String()})
 	if err != nil {
 		return domain.Customer{}, err
 	}
