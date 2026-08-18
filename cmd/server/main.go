@@ -18,6 +18,7 @@ import (
 	"github.com/iliya/crm-service/internal/adapter/postgres"
 	redisadapter "github.com/iliya/crm-service/internal/adapter/redis"
 	"github.com/iliya/crm-service/internal/domain"
+	"github.com/iliya/crm-service/internal/service"
 	pb "github.com/iliya/crm-service/proto/customerpb"
 )
 
@@ -25,36 +26,22 @@ const defaultDSN = "postgres://localhost:5432/crm?sslmode=disable"
 
 // customerServer implements the generated CustomerServiceServer interface.
 //
-// Both dependencies are now INTERFACES from the domain package, not concrete
-// adapter types. That is dependency inversion: this handler no longer knows
-// that Postgres or Redis exist, so a test can hand it a fake instead.
+// It now holds a *service.CustomerService instead of the repository and cache
+// directly - all the cache-aside logic and validation moved there. This
+// handler's only job is decode -> delegate -> encode.
 type customerServer struct {
 	pb.UnimplementedCustomerServiceServer
-	repo domain.CustomerRepository
-	// cache may be nil, meaning caching is disabled. Every cache method is
-	// nil-safe, so no handler needs to check.
-	cache domain.CustomerCache
+	svc *service.CustomerService
 }
 
 func (s *customerServer) CreateCustomer(
 	ctx context.Context,
 	req *pb.CreateCustomerRequest,
 ) (*pb.CreateCustomerResponse, error) {
-	if req.GetName() == "" {
-		return nil, status.Error(codes.InvalidArgument, "name must not be empty")
-	}
-	if req.GetEmail() == "" {
-		return nil, status.Error(codes.InvalidArgument, "email must not be empty")
-	}
-
-	// ctx is passed straight through to the query. If the client's deadline
-	// expires or it hangs up, Postgres is told to abandon the statement
-	// instead of finishing work nobody is waiting for.
-	c, err := s.repo.Create(ctx, domain.Customer{
-		Name:  req.GetName(),
-		Email: req.GetEmail(),
-	})
+	c, err := s.svc.Create(ctx, req.GetName(), req.GetEmail())
 	switch {
+	case errors.Is(err, domain.ErrInvalidName), errors.Is(err, domain.ErrInvalidEmail):
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, domain.ErrDuplicateEmail):
 		return nil, status.Errorf(codes.AlreadyExists, "email %q is already registered", req.GetEmail())
 	case err != nil:
@@ -62,8 +49,6 @@ func (s *customerServer) CreateCustomer(
 		log.Printf("CreateCustomer: %v", err)
 		return nil, status.Error(codes.Internal, "could not create customer")
 	}
-
-	log.Printf("created customer id=%d name=%q email=%q", c.ID, c.Name, c.Email)
 
 	return &pb.CreateCustomerResponse{
 		Id:      c.ID,
@@ -75,30 +60,14 @@ func (s *customerServer) GetCustomer(
 	ctx context.Context,
 	req *pb.GetCustomerRequest,
 ) (*pb.GetCustomerResponse, error) {
-	// Cache-aside, step 1: ask the cache first.
-	if c, hit := s.cache.Get(ctx, req.GetId()); hit {
-		log.Printf("fetched customer id=%d (cache HIT)", c.ID)
-		return customerToProto(c), nil
-	}
-
-	// Step 2: on a miss, go to the real source of truth.
-	c, err := s.repo.GetByID(ctx, req.GetId())
+	c, err := s.svc.GetByID(ctx, req.GetId())
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
-		// Deliberately NOT cached. Caching "this does not exist" is possible
-		// (negative caching) but then creating that customer would have to
-		// invalidate the negative entry too - more invalidation paths to get
-		// wrong, for little benefit here.
 		return nil, status.Errorf(codes.NotFound, "customer %d not found", req.GetId())
 	case err != nil:
 		log.Printf("GetCustomer: %v", err)
 		return nil, status.Error(codes.Internal, "could not fetch customer")
 	}
-
-	// Step 3: populate the cache so the next read is a hit.
-	s.cache.Set(ctx, c)
-
-	log.Printf("fetched customer id=%d (cache MISS -> db)", c.ID)
 
 	return customerToProto(c), nil
 }
@@ -107,19 +76,10 @@ func (s *customerServer) UpdateCustomer(
 	ctx context.Context,
 	req *pb.UpdateCustomerRequest,
 ) (*pb.GetCustomerResponse, error) {
-	if req.GetName() == "" {
-		return nil, status.Error(codes.InvalidArgument, "name must not be empty")
-	}
-	if req.GetEmail() == "" {
-		return nil, status.Error(codes.InvalidArgument, "email must not be empty")
-	}
-
-	c, err := s.repo.Update(ctx, domain.Customer{
-		ID:    req.GetId(),
-		Name:  req.GetName(),
-		Email: req.GetEmail(),
-	})
+	c, err := s.svc.Update(ctx, req.GetId(), req.GetName(), req.GetEmail())
 	switch {
+	case errors.Is(err, domain.ErrInvalidName), errors.Is(err, domain.ErrInvalidEmail):
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, domain.ErrNotFound):
 		return nil, status.Errorf(codes.NotFound, "customer %d not found", req.GetId())
 	case errors.Is(err, domain.ErrDuplicateEmail):
@@ -129,13 +89,6 @@ func (s *customerServer) UpdateCustomer(
 		return nil, status.Error(codes.Internal, "could not update customer")
 	}
 
-	// Invalidate AFTER the write succeeds. Doing it before would leave a window
-	// where a concurrent reader could re-populate the cache with the old row
-	// just before the update lands.
-	s.cache.Invalidate(ctx, c.ID)
-
-	log.Printf("updated customer id=%d name=%q email=%q (cache invalidated)", c.ID, c.Name, c.Email)
-
 	return customerToProto(c), nil
 }
 
@@ -143,7 +96,7 @@ func (s *customerServer) DeleteCustomer(
 	ctx context.Context,
 	req *pb.DeleteCustomerRequest,
 ) (*pb.DeleteCustomerResponse, error) {
-	err := s.repo.Delete(ctx, req.GetId())
+	err := s.svc.Delete(ctx, req.GetId())
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		return nil, status.Errorf(codes.NotFound, "customer %d not found", req.GetId())
@@ -151,10 +104,6 @@ func (s *customerServer) DeleteCustomer(
 		log.Printf("DeleteCustomer: %v", err)
 		return nil, status.Error(codes.Internal, "could not delete customer")
 	}
-
-	s.cache.Invalidate(ctx, req.GetId())
-
-	log.Printf("deleted customer id=%d (cache invalidated)", req.GetId())
 
 	return &pb.DeleteCustomerResponse{Message: "customer deleted"}, nil
 }
@@ -222,8 +171,10 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
+	svc := service.NewCustomerService(repo, rc)
+
 	s := grpc.NewServer()
-	pb.RegisterCustomerServiceServer(s, &customerServer{repo: repo, cache: rc})
+	pb.RegisterCustomerServiceServer(s, &customerServer{svc: svc})
 	reflection.Register(s)
 
 	// Serve blocks, so it runs in its own goroutine and reports failures back

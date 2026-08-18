@@ -815,8 +815,8 @@ next microservice starts in an hour instead of a week.
 A good skeleton contains:
 
 - the folder structure above, with one trivial example entity
-- `Dockerfile` + `docker-compose.yml`
-- `Makefile` with `proto`, `build`, `test`, `lint`, `run`
+- `../Dockerfile` + `../docker-compose.yml`
+- `../Makefile` with `proto`, `build`, `test`, `lint`, `run`
 - config loading from environment
 - structured logging, health checks, graceful shutdown
 - database connection + migration setup
@@ -888,7 +888,7 @@ Do not do all seven at once. Each step is independently useful:
 
 | # | Step | Why first |
 |---|---|---|
-| 1 | Create `internal/domain` with `Customer` + errors | everything else depends on having a centre |
+| 1 | Create `../internal/domain` with `Customer` + errors | everything else depends on having a centre |
 | 2 | Define `CustomerRepository` interface in `domain` | makes step 3 possible |
 | 3 | Move `store` → `adapter/postgres`, implement the interface | repository pattern complete |
 | 4 | Create `internal/service`, move caching + rules out of the handler | service pattern; handlers shrink to 3 lines |

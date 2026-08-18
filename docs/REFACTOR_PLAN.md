@@ -39,7 +39,7 @@ thing.
 
 ### Files to create
 
-**`internal/domain/customer.go`**
+**`../internal/domain/customer.go`**
 
 ```go
 package domain
@@ -56,7 +56,7 @@ type Customer struct {
 }
 ```
 
-**`internal/domain/errors.go`**
+**`../internal/domain/errors.go`**
 
 ```go
 package domain
@@ -76,7 +76,7 @@ var (
 - In `store`, import `domain` and change every `Customer` → `domain.Customer`,
   every `ErrNotFound` → `domain.ErrNotFound`, etc.
 - Same in `internal/cache/redis.go`.
-- In `cmd/server/main.go`, change `store.ErrNotFound` → `domain.ErrNotFound`
+- In `../cmd/server/main.go`, change `store.ErrNotFound` → `domain.ErrNotFound`
   and `store.Customer` → `domain.Customer`.
 
 ### Verify
@@ -103,7 +103,7 @@ in a later step.
 
 **Goal:** describe what the service *needs*, without saying how.
 
-**`internal/domain/repository.go`**
+**`../internal/domain/repository.go`**
 
 ```go
 package domain
@@ -158,7 +158,7 @@ git mv internal/cache/redis.go internal/adapter/redis/customer_cache.go
 rmdir internal/store internal/cache
 ```
 
-### Edit `internal/adapter/postgres/customer_repository.go`
+### Edit `../internal/adapter/postgres/customer_repository.go`
 
 - `package store` → `package postgres`
 - `type Store` → `type CustomerRepository`
@@ -180,7 +180,7 @@ var _ domain.CustomerRepository = (*CustomerRepository)(nil)
 If a method name or signature is wrong, **the build fails here** with a clear
 message, instead of somewhere confusing later.
 
-### Edit `internal/adapter/redis/customer_cache.go`
+### Edit `../internal/adapter/redis/customer_cache.go`
 
 - `package cache` → `package redis`
 - ⚠️ **Name collision:** this package is now called `redis` and it imports
@@ -194,7 +194,7 @@ message, instead of somewhere confusing later.
   var _ domain.CustomerCache = (*CustomerCache)(nil)
   ```
 
-### Update `cmd/server/main.go`
+### Update `../cmd/server/main.go`
 
 ```go
 import (
@@ -270,7 +270,7 @@ if strings.TrimSpace(name) == "" {
 }
 ```
 
-Add those to `internal/domain/errors.go`:
+Add those to `../internal/domain/errors.go`:
 
 ```go
 ErrInvalidName  = errors.New("name must not be empty")
@@ -289,7 +289,7 @@ If you catch yourself importing `grpc` here, the logic belongs elsewhere.
 
 ### Update the handlers to call it
 
-For now leave the handlers in `cmd/server/main.go`; just have them call
+For now leave the handlers in `../cmd/server/main.go`; just have them call
 `s.svc.GetByID(...)` and keep their error `switch`. Step 5 moves them.
 
 ### Verify
@@ -360,7 +360,7 @@ func (h *CustomerHandler) GetCustomer(ctx context.Context, req *pb.GetCustomerRe
 
 Each of the four handlers should now be about that long.
 
-### `cmd/server/main.go` becomes the composition root
+### `../cmd/server/main.go` becomes the composition root
 
 ```go
 func main() {
@@ -513,7 +513,7 @@ repository was called *once* across two `GetByID` calls.
 - [ ] `go build ./... && go vet ./... && gofmt -l .` all clean
 - [ ] `go list -deps ./internal/domain | grep -E "pgx|grpc|redis"` finds nothing
 - [ ] `go test ./...` passes with no infrastructure running
-- [ ] `cmd/server/main.go` contains no business logic — only wiring
+- [ ] `../cmd/server/main.go` contains no business logic — only wiring
 - [ ] Every handler is under ~8 lines
 - [ ] All four `grpcurl` operations behave exactly as they did at Step 0
 - [ ] All four error cases return the same codes as at Step 0

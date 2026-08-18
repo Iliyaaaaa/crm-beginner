@@ -1,6 +1,6 @@
 # داکر — یادداشت‌های تئوری
 
-تسک ۳: داکر چیست، فایل `Dockerfile` شامل چه چیزهایی است، و چرا کانتینرها در
+تسک ۳: داکر چیست، فایل `../Dockerfile` شامل چه چیزهایی است، و چرا کانتینرها در
 معماری میکروسرویس اهمیت دارند.
 
 این متن بعد از کانتینری کردن پروژه‌ی `crm-service` نوشته شده، پس تمام مثال‌ها از
@@ -103,7 +103,7 @@ crm-service-server-1        ← کانتینر (یک پروسه‌ی در حال
 
 ## ۴. فایل Dockerfile
 
-فایل `Dockerfile` یک دستور پخت است: یک فایل متنی از مراحل مرتب که یک ایمیج تولید
+فایل `../Dockerfile` یک دستور پخت است: یک فایل متنی از مراحل مرتب که یک ایمیج تولید
 می‌کند. این هم فایل ما، کامل، با توضیح هر خط.
 
 ### مرحله‌ی اول — ساخت (build)
@@ -112,10 +112,10 @@ crm-service-server-1        ← کانتینر (یک پروسه‌ی در حال
 FROM golang:1-bookworm AS build
 WORKDIR /src
 
-COPY go.mod go.sum ./
+COPY ../go.mod go.sum ./
 RUN go mod download
 
-COPY . .
+COPY .. .
 
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/server ./cmd/server
 ```

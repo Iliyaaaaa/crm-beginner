@@ -24,7 +24,7 @@ language you need:
 Because both sides are generated from the same file, they cannot silently drift
 apart. If the contract changes in an incompatible way, the code stops compiling.
 
-In this repository the contract is [`proto/customerpb/customer.proto`](proto/customerpb/customer.proto):
+In this repository the contract is [`../proto/customerpb/customer.proto`](../proto/customerpb/customer.proto):
 
 ```proto
 service CustomerService {
@@ -140,7 +140,7 @@ returns one. Common ones:
 | `UNIMPLEMENTED` | method declared but not implemented | 501 |
 
 In Go these are returned with the `status` package, as in
-[`cmd/server/main.go`](cmd/server/main.go):
+[`../cmd/server/main.go`](../cmd/server/main.go):
 
 ```go
 return nil, status.Errorf(codes.NotFound, "customer %d not found", req.GetId())

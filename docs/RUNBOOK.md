@@ -232,7 +232,7 @@ Show the shape of one message, so you know what JSON to send:
 grpcurl -plaintext localhost:50051 describe customer.CreateCustomerRequest
 ```
 
-This works because of `reflection.Register(s)` in `cmd/server/main.go`. It is
+This works because of `reflection.Register(s)` in `../cmd/server/main.go`. It is
 how grpcurl knows your API without you giving it the `.proto` file.
 
 ---
@@ -275,7 +275,7 @@ grpcurl -plaintext -d '{"id":9999}' localhost:50051 customer.CustomerService/Get
 |---|---|
 | `make proto` | regenerate Go code after editing `customer.proto` |
 | `make build` | compile everything |
-| `make tidy` | sync `go.mod` with your imports |
+| `make tidy` | sync `../go.mod` with your imports |
 | `go vet ./...` | catch suspicious code |
 | `gofmt -l .` | list badly formatted files (prints nothing if clean) |
 
@@ -289,7 +289,7 @@ automatic. This is the most common thing to forget.
 | Command | Does |
 |---|---|
 | `make db-create` | create the `crm` database (first-time setup) |
-| `make db-migrate` | apply the schema files in `db/migrations/` |
+| `make db-migrate` | apply the schema files in `../db/migrations` |
 | `make db-reset` | ⚠️ drop the table and recreate it — **destroys all data** |
 
 Setting up from scratch on a new machine:

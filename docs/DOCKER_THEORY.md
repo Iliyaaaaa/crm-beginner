@@ -1,6 +1,6 @@
 # Docker — Theory Notes
 
-Task 3: what Docker is, what a `Dockerfile` contains, and why containers matter
+Task 3: what Docker is, what a `../Dockerfile` contains, and why containers matter
 in a microservice architecture.
 
 Written after containerising `crm-service`, so every example is from this
@@ -103,7 +103,7 @@ exactly why containers and microservices grew up together.
 
 ## 4. The Dockerfile
 
-A `Dockerfile` is a recipe: a text file of ordered steps that produce an image.
+A `../Dockerfile` is a recipe: a text file of ordered steps that produce an image.
 Here is ours, in full, with what each line does.
 
 ### Stage one — build
@@ -112,10 +112,10 @@ Here is ours, in full, with what each line does.
 FROM golang:1-bookworm AS build
 WORKDIR /src
 
-COPY go.mod go.sum ./
+COPY ../go.mod go.sum ./
 RUN go mod download
 
-COPY . .
+COPY .. .
 
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/server ./cmd/server
 ```
