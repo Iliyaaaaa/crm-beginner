@@ -76,7 +76,19 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	svc := service.NewCustomerService(a.repo, a.cache)
 	handler := grpcadapter.NewCustomerHandler(svc)
 
-	a.grpcSrv = grpc.NewServer()
+	// Interceptors are middleware. ChainUnaryInterceptor runs them in the
+	// order listed, outermost first, so Recovery wraps Logging - a panic
+	// anywhere inside, including in the logging interceptor itself, is caught.
+	a.grpcSrv = grpc.NewServer(
+		grpc.ChainUnaryInterceptor(
+			grpcadapter.RecoveryUnaryInterceptor,
+			grpcadapter.LoggingUnaryInterceptor,
+		),
+		grpc.ChainStreamInterceptor(
+			grpcadapter.RecoveryStreamInterceptor,
+			grpcadapter.LoggingStreamInterceptor,
+		),
+	)
 	pb.RegisterCustomerServiceServer(a.grpcSrv, handler)
 	reflection.Register(a.grpcSrv)
 

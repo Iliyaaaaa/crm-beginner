@@ -23,6 +23,7 @@ const (
 	CustomerService_GetCustomer_FullMethodName    = "/customer.CustomerService/GetCustomer"
 	CustomerService_UpdateCustomer_FullMethodName = "/customer.CustomerService/UpdateCustomer"
 	CustomerService_DeleteCustomer_FullMethodName = "/customer.CustomerService/DeleteCustomer"
+	CustomerService_ListCustomers_FullMethodName  = "/customer.CustomerService/ListCustomers"
 )
 
 // CustomerServiceClient is the client API for CustomerService service.
@@ -35,6 +36,11 @@ type CustomerServiceClient interface {
 	// returns the row as it now stands - the same shape GetCustomer returns.
 	UpdateCustomer(ctx context.Context, in *UpdateCustomerRequest, opts ...grpc.CallOption) (*GetCustomerResponse, error)
 	DeleteCustomer(ctx context.Context, in *DeleteCustomerRequest, opts ...grpc.CallOption) (*DeleteCustomerResponse, error)
+	// ListCustomers is SERVER STREAMING: the `stream` keyword means one request
+	// gets many responses, sent one at a time as they become available, instead
+	// of one big list at the end. Reuses GetCustomerResponse as the item type,
+	// consistent with UpdateCustomer.
+	ListCustomers(ctx context.Context, in *ListCustomersRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetCustomerResponse], error)
 }
 
 type customerServiceClient struct {
@@ -85,6 +91,25 @@ func (c *customerServiceClient) DeleteCustomer(ctx context.Context, in *DeleteCu
 	return out, nil
 }
 
+func (c *customerServiceClient) ListCustomers(ctx context.Context, in *ListCustomersRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetCustomerResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &CustomerService_ServiceDesc.Streams[0], CustomerService_ListCustomers_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ListCustomersRequest, GetCustomerResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type CustomerService_ListCustomersClient = grpc.ServerStreamingClient[GetCustomerResponse]
+
 // CustomerServiceServer is the server API for CustomerService service.
 // All implementations must embed UnimplementedCustomerServiceServer
 // for forward compatibility.
@@ -95,6 +120,11 @@ type CustomerServiceServer interface {
 	// returns the row as it now stands - the same shape GetCustomer returns.
 	UpdateCustomer(context.Context, *UpdateCustomerRequest) (*GetCustomerResponse, error)
 	DeleteCustomer(context.Context, *DeleteCustomerRequest) (*DeleteCustomerResponse, error)
+	// ListCustomers is SERVER STREAMING: the `stream` keyword means one request
+	// gets many responses, sent one at a time as they become available, instead
+	// of one big list at the end. Reuses GetCustomerResponse as the item type,
+	// consistent with UpdateCustomer.
+	ListCustomers(*ListCustomersRequest, grpc.ServerStreamingServer[GetCustomerResponse]) error
 	mustEmbedUnimplementedCustomerServiceServer()
 }
 
@@ -116,6 +146,9 @@ func (UnimplementedCustomerServiceServer) UpdateCustomer(context.Context, *Updat
 }
 func (UnimplementedCustomerServiceServer) DeleteCustomer(context.Context, *DeleteCustomerRequest) (*DeleteCustomerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteCustomer not implemented")
+}
+func (UnimplementedCustomerServiceServer) ListCustomers(*ListCustomersRequest, grpc.ServerStreamingServer[GetCustomerResponse]) error {
+	return status.Error(codes.Unimplemented, "method ListCustomers not implemented")
 }
 func (UnimplementedCustomerServiceServer) mustEmbedUnimplementedCustomerServiceServer() {}
 func (UnimplementedCustomerServiceServer) testEmbeddedByValue()                         {}
@@ -210,6 +243,17 @@ func _CustomerService_DeleteCustomer_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CustomerService_ListCustomers_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ListCustomersRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(CustomerServiceServer).ListCustomers(m, &grpc.GenericServerStream[ListCustomersRequest, GetCustomerResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type CustomerService_ListCustomersServer = grpc.ServerStreamingServer[GetCustomerResponse]
+
 // CustomerService_ServiceDesc is the grpc.ServiceDesc for CustomerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -234,6 +278,12 @@ var CustomerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _CustomerService_DeleteCustomer_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "ListCustomers",
+			Handler:       _CustomerService_ListCustomers_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "proto/customerpb/customer.proto",
 }

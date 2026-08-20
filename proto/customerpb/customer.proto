@@ -11,6 +11,11 @@ service CustomerService {
   // returns the row as it now stands - the same shape GetCustomer returns.
   rpc UpdateCustomer(UpdateCustomerRequest) returns (GetCustomerResponse);
   rpc DeleteCustomer(DeleteCustomerRequest) returns (DeleteCustomerResponse);
+  // ListCustomers is SERVER STREAMING: the `stream` keyword means one request
+  // gets many responses, sent one at a time as they become available, instead
+  // of one big list at the end. Reuses GetCustomerResponse as the item type,
+  // consistent with UpdateCustomer.
+  rpc ListCustomers(ListCustomersRequest) returns (stream GetCustomerResponse);
 }
 
 message CreateCustomerRequest {
@@ -50,4 +55,10 @@ message DeleteCustomerRequest {
 
 message DeleteCustomerResponse {
   string message = 1;
+}
+
+message ListCustomersRequest {
+  // Maximum rows to return. 0 means "use the server default". The server also
+  // caps it, so a client cannot ask for an unbounded stream.
+  int32 limit = 1;
 }

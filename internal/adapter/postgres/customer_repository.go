@@ -121,6 +121,40 @@ func (r *CustomerRepository) Update(ctx context.Context, c domain.Customer) (dom
 	return out, nil
 }
 
+// List returns up to limit customers, oldest first.
+func (r *CustomerRepository) List(ctx context.Context, limit int32) ([]domain.Customer, error) {
+	const q = `
+		SELECT id, name, email, created_at, updated_at
+		FROM customers
+		ORDER BY id
+		LIMIT $1`
+
+	// Query, not QueryRow: this returns many rows, so we iterate.
+	rows, err := r.pool.Query(ctx, q, limit)
+	if err != nil {
+		return nil, fmt.Errorf("select customers: %w", err)
+	}
+	// Close is safe to call twice and releases the connection back to the pool
+	// even if we return early mid-iteration.
+	defer rows.Close()
+
+	var out []domain.Customer
+	for rows.Next() {
+		var c domain.Customer
+		if err := rows.Scan(&c.ID, &c.Name, &c.Email, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan customer: %w", err)
+		}
+		out = append(out, c)
+	}
+	// rows.Err() reports failures that happened DURING iteration - a dropped
+	// connection halfway through, for example. Without this check a truncated
+	// result would look like a successful short list.
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate customers: %w", err)
+	}
+	return out, nil
+}
+
 // Delete removes a row by id. This is a hard delete: the row is gone, not
 // flagged. A real CRM usually wants a soft delete (a deleted_at column,
 // filtered out of normal queries) so records can be restored.

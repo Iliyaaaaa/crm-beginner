@@ -45,7 +45,6 @@ func (s *CustomerService) Create(ctx context.Context, name, rawEmail string) (do
 		return domain.Customer{}, err
 	}
 
-	log.Printf("created customer id=%d name=%q email=%q", c.ID, c.Name, c.Email)
 	return c, nil
 }
 
@@ -92,8 +91,31 @@ func (s *CustomerService) Update(ctx context.Context, id int64, name, rawEmail s
 	// old row just before this update lands.
 	s.cache.Invalidate(ctx, c.ID)
 
-	log.Printf("updated customer id=%d name=%q email=%q (cache invalidated)", c.ID, c.Name, c.Email)
 	return c, nil
+}
+
+// Limits applied to List. Clamping here rather than in the handler keeps the
+// policy with the rest of the business rules, where a REST transport would
+// get it for free too.
+const (
+	defaultListLimit int32 = 100
+	maxListLimit     int32 = 500
+)
+
+// List returns up to limit customers. A limit of 0 or less means "use the
+// default"; anything above maxListLimit is capped, so a client cannot ask the
+// server for an unbounded amount of work.
+//
+// Results are not cached: the cache is keyed by customer id, and any list
+// result would go stale the moment any single customer changed.
+func (s *CustomerService) List(ctx context.Context, limit int32) ([]domain.Customer, error) {
+	if limit <= 0 {
+		limit = defaultListLimit
+	}
+	if limit > maxListLimit {
+		limit = maxListLimit
+	}
+	return s.repo.List(ctx, limit)
 }
 
 // Delete removes a customer and invalidates the cache.
@@ -103,6 +125,5 @@ func (s *CustomerService) Delete(ctx context.Context, id int64) error {
 	}
 
 	s.cache.Invalidate(ctx, id)
-	log.Printf("deleted customer id=%d (cache invalidated)", id)
 	return nil
 }

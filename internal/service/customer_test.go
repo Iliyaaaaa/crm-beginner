@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ type fakeRepo struct {
 	customers map[int64]domain.Customer
 	nextID    int64
 	getCalls  int
+	lastLimit int32
 }
 
 var _ domain.CustomerRepository = (*fakeRepo)(nil)
@@ -65,6 +67,25 @@ func (f *fakeRepo) Update(ctx context.Context, c domain.Customer) (domain.Custom
 	existing.UpdatedAt = time.Now()
 	f.customers[c.ID] = existing
 	return existing, nil
+}
+
+func (f *fakeRepo) List(ctx context.Context, limit int32) ([]domain.Customer, error) {
+	f.lastLimit = limit
+	// Deterministic order by id, mirroring the real query's ORDER BY id.
+	ids := make([]int64, 0, len(f.customers))
+	for id := range f.customers {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	var out []domain.Customer
+	for _, id := range ids {
+		if int32(len(out)) >= limit {
+			break
+		}
+		out = append(out, f.customers[id])
+	}
+	return out, nil
 }
 
 func (f *fakeRepo) Delete(ctx context.Context, id int64) error {
@@ -261,5 +282,74 @@ func TestNilCache_DoesNotPanic(t *testing.T) {
 	}
 	if got.ID != created.ID {
 		t.Fatalf("expected id %d, got %d", created.ID, got.ID)
+	}
+}
+
+func TestList_ReturnsCustomers(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewCustomerService(repo, newFakeCache())
+	ctx := context.Background()
+
+	for _, e := range []string{"a@example.com", "b@example.com", "c@example.com"} {
+		if _, err := svc.Create(ctx, "Name", e); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+	}
+
+	got, err := svc.List(ctx, 0)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 customers, got %d", len(got))
+	}
+	// ORDER BY id, so the first created comes first.
+	if got[0].Email != "a@example.com" {
+		t.Errorf("expected a@example.com first, got %q", got[0].Email)
+	}
+}
+
+func TestList_ZeroLimitUsesDefault(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewCustomerService(repo, newFakeCache())
+
+	if _, err := svc.List(context.Background(), 0); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if repo.lastLimit != defaultListLimit {
+		t.Fatalf("expected limit %d, repo got %d", defaultListLimit, repo.lastLimit)
+	}
+}
+
+// A client must not be able to ask the server for unbounded work.
+func TestList_ClampsExcessiveLimit(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewCustomerService(repo, newFakeCache())
+
+	if _, err := svc.List(context.Background(), 100000); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if repo.lastLimit != maxListLimit {
+		t.Fatalf("expected limit clamped to %d, repo got %d", maxListLimit, repo.lastLimit)
+	}
+}
+
+func TestList_RespectsExplicitLimit(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewCustomerService(repo, newFakeCache())
+	ctx := context.Background()
+
+	for _, e := range []string{"a@example.com", "b@example.com", "c@example.com"} {
+		if _, err := svc.Create(ctx, "Name", e); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+	}
+
+	got, err := svc.List(ctx, 2)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 customers, got %d", len(got))
 	}
 }
