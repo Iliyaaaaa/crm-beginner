@@ -178,7 +178,7 @@ Each step ends with a working build. Commit after each one.
 
 ## Step 1 — The contract
 
-Add to `customer.proto` (or a new `log.proto` - your call; a separate file is
+Add to `log.proto` (or a new `log.proto` - your call; a separate file is
 cleaner since this is a different concern):
 
 ```proto

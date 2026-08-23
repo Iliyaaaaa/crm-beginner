@@ -273,13 +273,13 @@ grpcurl -plaintext -d '{"id":9999}' localhost:50051 customer.CustomerService/Get
 
 | Command | Does |
 |---|---|
-| `make proto` | regenerate Go code after editing `customer.proto` |
+| `make proto` | regenerate Go code after editing `log.proto` |
 | `make build` | compile everything |
 | `make tidy` | sync `../go.mod` with your imports |
 | `go vet ./...` | catch suspicious code |
 | `gofmt -l .` | list badly formatted files (prints nothing if clean) |
 
-**After editing `customer.proto` you must run `make proto`.** Nothing is
+**After editing `log.proto` you must run `make proto`.** Nothing is
 automatic. This is the most common thing to forget.
 
 ---
@@ -368,6 +368,6 @@ grpcurl -plaintext -d '{"id":1}'                 localhost:50051 customer.Custom
 grpcurl -plaintext -d '{"id":1,"name":"N","email":"E"}' localhost:50051 customer.CustomerService/UpdateCustomer
 grpcurl -plaintext -d '{"id":1}'                 localhost:50051 customer.CustomerService/DeleteCustomer
 
-# --- after changing customer.proto ---
+# --- after changing log.proto ---
 make proto
 ```

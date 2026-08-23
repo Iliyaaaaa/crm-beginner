@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package log;
+
+option go_package = "github.com/iliya/crm-service/proto/logpb";
+
+service LogService {
+  rpc IngestLogs(stream LogEntry) returns (IngestSummary);
+}
+
+message LogEntry {
+  string level     = 1;
+  string message   = 2;
+  string service   = 3;
+  string timestamp = 4;
+}
+
+message IngestSummary {
+  int64 accepted = 1;
+}

@@ -6,13 +6,13 @@ DATABASE_URL ?= postgres://localhost:5432/crm?sslmode=disable
 
 # ---------------------------------------------------------------- protobuf --
 
-# Regenerate Go code from the .proto contract.
-# Run this every time you edit proto/customerpb/customer.proto
+# Regenerate Go code from every .proto contract.
+# Run this every time you edit proto/customerpb/customer.proto or proto/logpb/log.proto
 proto:
 	PATH="$(PATH):$(shell go env GOPATH)/bin" protoc \
 		--go_out=. --go_opt=paths=source_relative \
 		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
-		proto/customerpb/customer.proto
+		proto/customerpb/customer.proto proto/logpb/log.proto
 
 # ------------------------------------------------------------------- build --
 
@@ -29,7 +29,7 @@ build:
 	go build ./...
 
 clean:
-	rm -f proto/customerpb/*.pb.go
+	rm -f proto/customerpb/*.pb.go proto/logpb/*.pb.go
 
 # ---------------------------------------------------------------- database --
 
