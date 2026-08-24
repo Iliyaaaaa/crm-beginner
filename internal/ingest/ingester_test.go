@@ -191,8 +191,12 @@ func TestStopIsIdempotent(t *testing.T) {
 	// Arrange
 	ing := New(&fakeRepo{}, Config{Workers: 1, BatchSize: 10, FlushInterval: time.Hour, BufferSize: 10})
 	ing.Start(context.Background())
+	ing.Stop() // the first call - normal shutdown
 
-	// Act + Assert: the second call must be a no-op, not a panic.
+	// Act: call Stop a second time
 	ing.Stop()
-	ing.Stop()
+
+	// Assert: nothing to check explicitly - reaching this line at all IS the
+	// assertion. A second close(ch) without the sync.Once guard would panic,
+	// and an unrecovered panic fails the test automatically.
 }

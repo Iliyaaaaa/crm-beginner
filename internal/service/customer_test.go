@@ -135,39 +135,52 @@ func (f *fakeCache) Invalidate(ctx context.Context, id int64) {
 // --- tests --------------------------------------------------------------
 
 func TestGetByID_NotFound(t *testing.T) {
+	// Arrange
 	svc := NewCustomerService(newFakeRepo(), newFakeCache())
 
+	// Act
 	_, err := svc.GetByID(context.Background(), 999)
 
+	// Assert
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
 
 func TestCreate_RejectsEmptyName(t *testing.T) {
+	// Arrange
 	svc := NewCustomerService(newFakeRepo(), newFakeCache())
 
+	// Act
 	_, err := svc.Create(context.Background(), "", "valid@example.com")
 
+	// Assert
 	if !errors.Is(err, domain.ErrInvalidName) {
 		t.Fatalf("expected ErrInvalidName, got %v", err)
 	}
 }
 
 func TestCreate_RejectsInvalidEmail(t *testing.T) {
+	// Arrange
 	svc := NewCustomerService(newFakeRepo(), newFakeCache())
 
+	// Act
 	_, err := svc.Create(context.Background(), "Valid Name", "not-an-email")
 
+	// Assert
 	if !errors.Is(err, domain.ErrInvalidEmail) {
 		t.Fatalf("expected ErrInvalidEmail, got %v", err)
 	}
 }
 
 func TestCreate_NormalisesEmail(t *testing.T) {
+	// Arrange
 	svc := NewCustomerService(newFakeRepo(), newFakeCache())
 
+	// Act
 	c, err := svc.Create(context.Background(), "Ali", "  Ali@Example.COM  ")
+
+	// Assert
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -177,16 +190,18 @@ func TestCreate_NormalisesEmail(t *testing.T) {
 }
 
 func TestCreate_DuplicateEmail(t *testing.T) {
+	// Arrange: one existing customer to collide with
 	svc := NewCustomerService(newFakeRepo(), newFakeCache())
 	ctx := context.Background()
-
 	if _, err := svc.Create(ctx, "First", "dup@example.com"); err != nil {
-		t.Fatalf("first create: %v", err)
+		t.Fatalf("arrange: first create: %v", err)
 	}
 
-	// Different casing on purpose: proves normalisation happens before the
-	// uniqueness check, not just on display.
+	// Act: different casing on purpose - proves normalisation happens before
+	// the uniqueness check, not just on display.
 	_, err := svc.Create(ctx, "Second", "DUP@Example.com")
+
+	// Assert
 	if !errors.Is(err, domain.ErrDuplicateEmail) {
 		t.Fatalf("expected ErrDuplicateEmail, got %v", err)
 	}
@@ -195,63 +210,67 @@ func TestCreate_DuplicateEmail(t *testing.T) {
 // TestGetByID_CachesOnMiss is the test that actually proves the cache-aside
 // logic works: the repository must be hit exactly once across two reads.
 func TestGetByID_CachesOnMiss(t *testing.T) {
+	// Arrange
 	repo := newFakeRepo()
 	svc := NewCustomerService(repo, newFakeCache())
 	ctx := context.Background()
-
 	created, err := svc.Create(ctx, "Ali", "ali@example.com")
 	if err != nil {
-		t.Fatalf("setup: %v", err)
+		t.Fatalf("arrange: %v", err)
 	}
 
+	// Act: read the same customer twice
 	if _, err := svc.GetByID(ctx, created.ID); err != nil {
 		t.Fatalf("first GetByID: %v", err)
 	}
-	if repo.getCalls != 1 {
-		t.Fatalf("expected 1 repo call after a cache miss, got %d", repo.getCalls)
-	}
-
 	if _, err := svc.GetByID(ctx, created.ID); err != nil {
 		t.Fatalf("second GetByID: %v", err)
 	}
+
+	// Assert: exactly one repo call total means the 2nd read was a cache hit
 	if repo.getCalls != 1 {
-		t.Fatalf("expected repo calls to stay at 1 on a cache hit, got %d", repo.getCalls)
+		t.Fatalf("expected repo to be called once (cache hit on the 2nd read), got %d calls", repo.getCalls)
 	}
 }
 
 // TestUpdate_InvalidatesCache proves an update can never leave a stale entry
 // behind - the bug class that made Invalidate mandatory in the first place.
 func TestUpdate_InvalidatesCache(t *testing.T) {
+	// Arrange: a customer whose cache entry is warmed
 	repo := newFakeRepo()
 	cache := newFakeCache()
 	svc := NewCustomerService(repo, cache)
 	ctx := context.Background()
-
 	created, err := svc.Create(ctx, "Ali", "ali@example.com")
 	if err != nil {
-		t.Fatalf("setup: %v", err)
+		t.Fatalf("arrange: create: %v", err)
 	}
-	if _, err := svc.GetByID(ctx, created.ID); err != nil { // warm the cache
-		t.Fatalf("warm cache: %v", err)
+	if _, err := svc.GetByID(ctx, created.ID); err != nil {
+		t.Fatalf("arrange: warm cache: %v", err)
 	}
 	if _, ok := cache.data[created.ID]; !ok {
-		t.Fatalf("setup: expected cache to be warmed")
+		t.Fatalf("arrange: expected cache to be warmed")
 	}
 
+	// Act
 	if _, err := svc.Update(ctx, created.ID, "Ali Renamed", "ali@example.com"); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 
+	// Assert
 	if _, ok := cache.data[created.ID]; ok {
 		t.Fatalf("expected cache entry to be gone after Update")
 	}
 }
 
 func TestDelete_NotFound(t *testing.T) {
+	// Arrange
 	svc := NewCustomerService(newFakeRepo(), newFakeCache())
 
+	// Act
 	err := svc.Delete(context.Background(), 999)
 
+	// Assert
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
@@ -267,36 +286,42 @@ func TestDelete_NotFound(t *testing.T) {
 // different, unrelated case: calling a method on a truly nil interface value
 // panics immediately, because there is no concrete type to dispatch to.
 func TestNilCache_DoesNotPanic(t *testing.T) {
+	// Arrange
 	var nilCache *fakeCache
 	svc := NewCustomerService(newFakeRepo(), nilCache)
 	ctx := context.Background()
 
+	// Act
 	created, err := svc.Create(ctx, "Ali", "ali@example.com")
 	if err != nil {
 		t.Fatalf("Create with nil cache: %v", err)
 	}
-
 	got, err := svc.GetByID(ctx, created.ID)
 	if err != nil {
 		t.Fatalf("GetByID with nil cache: %v", err)
 	}
+
+	// Assert
 	if got.ID != created.ID {
 		t.Fatalf("expected id %d, got %d", created.ID, got.ID)
 	}
 }
 
 func TestList_ReturnsCustomers(t *testing.T) {
+	// Arrange
 	repo := newFakeRepo()
 	svc := NewCustomerService(repo, newFakeCache())
 	ctx := context.Background()
-
 	for _, e := range []string{"a@example.com", "b@example.com", "c@example.com"} {
 		if _, err := svc.Create(ctx, "Name", e); err != nil {
-			t.Fatalf("setup: %v", err)
+			t.Fatalf("arrange: %v", err)
 		}
 	}
 
+	// Act
 	got, err := svc.List(ctx, 0)
+
+	// Assert
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -310,10 +335,15 @@ func TestList_ReturnsCustomers(t *testing.T) {
 }
 
 func TestList_ZeroLimitUsesDefault(t *testing.T) {
+	// Arrange
 	repo := newFakeRepo()
 	svc := NewCustomerService(repo, newFakeCache())
 
-	if _, err := svc.List(context.Background(), 0); err != nil {
+	// Act
+	_, err := svc.List(context.Background(), 0)
+
+	// Assert
+	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if repo.lastLimit != defaultListLimit {
@@ -323,10 +353,15 @@ func TestList_ZeroLimitUsesDefault(t *testing.T) {
 
 // A client must not be able to ask the server for unbounded work.
 func TestList_ClampsExcessiveLimit(t *testing.T) {
+	// Arrange
 	repo := newFakeRepo()
 	svc := NewCustomerService(repo, newFakeCache())
 
-	if _, err := svc.List(context.Background(), 100000); err != nil {
+	// Act
+	_, err := svc.List(context.Background(), 100000)
+
+	// Assert
+	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if repo.lastLimit != maxListLimit {
@@ -335,17 +370,20 @@ func TestList_ClampsExcessiveLimit(t *testing.T) {
 }
 
 func TestList_RespectsExplicitLimit(t *testing.T) {
+	// Arrange
 	repo := newFakeRepo()
 	svc := NewCustomerService(repo, newFakeCache())
 	ctx := context.Background()
-
 	for _, e := range []string{"a@example.com", "b@example.com", "c@example.com"} {
 		if _, err := svc.Create(ctx, "Name", e); err != nil {
-			t.Fatalf("setup: %v", err)
+			t.Fatalf("arrange: %v", err)
 		}
 	}
 
+	// Act
 	got, err := svc.List(ctx, 2)
+
+	// Assert
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
