@@ -42,8 +42,14 @@ db-stop:
 db-create:
 	$(PG_BIN)/createdb crm || echo "database 'crm' already exists"
 
+# Applies every migration file in db/migrations/ in order. Filenames are
+# zero-padded (0001_, 0002_, ...) specifically so shell globbing sorts them
+# correctly - this is why migrations must never be renamed once committed.
 db-migrate:
-	$(PG_BIN)/psql -d crm -f db/migrations/0001_create_customers.sql
+	for f in db/migrations/*.sql; do \
+		echo "applying $$f"; \
+		$(PG_BIN)/psql -d crm -f $$f; \
+	done
 
 # Open an interactive SQL prompt. \d customers describes the table, \q quits.
 db-shell:
