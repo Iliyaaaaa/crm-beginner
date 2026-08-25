@@ -24,8 +24,10 @@ import (
 	"github.com/iliya/crm-service/internal/adapter/postgres"
 	redisadapter "github.com/iliya/crm-service/internal/adapter/redis"
 	"github.com/iliya/crm-service/internal/config"
+	"github.com/iliya/crm-service/internal/ingest"
 	"github.com/iliya/crm-service/internal/service"
 	pb "github.com/iliya/crm-service/proto/customerpb"
+	logpb "github.com/iliya/crm-service/proto/logpb"
 )
 
 // App owns the assembled dependency graph and the resources that need closing.
@@ -37,6 +39,8 @@ type App struct {
 	// `cache == nil` check would not fire. This works only because the
 	// adapter's methods each check their own nil receiver.
 	cache    *redisadapter.CustomerCache
+	logRepo  *postgres.LogRepository
+	ingester *ingest.Ingester
 	grpcSrv  *grpc.Server
 	listener net.Listener
 }
@@ -71,10 +75,30 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		log.Println("REDIS_URL not set, caching disabled")
 	}
 
+	logRepo, err := postgres.NewLogRepository(startCtx, cfg.DatabaseURL)
+	if err != nil {
+		a.Close()
+		return nil, fmt.Errorf("log repository: %w", err)
+	}
+	a.logRepo = logRepo
+	log.Println("connected to postgres (logs)")
+
+	// The ingester's lifetime is the WHOLE app, not just startup - it must
+	// keep running after New returns, so it gets the long-lived ctx, not
+	// startCtx (which is cancelled the moment New returns via its own defer).
+	a.ingester = ingest.New(a.logRepo, ingest.Config{
+		Workers:       cfg.LogWorkers,
+		BatchSize:     cfg.LogBatchSize,
+		FlushInterval: cfg.LogFlushInterval,
+		BufferSize:    cfg.LogBufferSize,
+	})
+	a.ingester.Start(ctx)
+
 	// --- service, then inbound adapter ------------------------------------
 
 	svc := service.NewCustomerService(a.repo, a.cache)
 	handler := grpcadapter.NewCustomerHandler(svc)
+	logHandler := grpcadapter.NewLogHandler(a.ingester)
 
 	// Interceptors are middleware. ChainUnaryInterceptor runs them in the
 	// order listed, outermost first, so Recovery wraps Logging - a panic
@@ -90,6 +114,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		),
 	)
 	pb.RegisterCustomerServiceServer(a.grpcSrv, handler)
+	logpb.RegisterLogServiceServer(a.grpcSrv, logHandler)
 	reflection.Register(a.grpcSrv)
 
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
@@ -129,11 +154,22 @@ func (a *App) Run(ctx context.Context) error {
 
 // Close releases resources in reverse construction order. Safe to call on a
 // partially built App - every field is nil-checked.
+//
+// The ingester is stopped FIRST, before either database connection closes.
+// Stop drains any in-flight batch, and that drain still needs a live
+// connection to write to - closing the pools first would make the final
+// flush fail every time.
 func (a *App) Close() {
+	if a.ingester != nil {
+		a.ingester.Stop()
+	}
 	if a.cache != nil {
 		if err := a.cache.Close(); err != nil {
 			log.Printf("closing redis: %v", err)
 		}
+	}
+	if a.logRepo != nil {
+		a.logRepo.Close()
 	}
 	if a.repo != nil {
 		a.repo.Close()

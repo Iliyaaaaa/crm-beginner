@@ -39,6 +39,18 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.CacheEnabled() {
 		t.Error("CacheEnabled() = true with no REDIS_URL, want false")
 	}
+	if cfg.LogWorkers != defaultLogWorkers {
+		t.Errorf("LogWorkers = %d, want %d", cfg.LogWorkers, defaultLogWorkers)
+	}
+	if cfg.LogBatchSize != defaultLogBatchSize {
+		t.Errorf("LogBatchSize = %d, want %d", cfg.LogBatchSize, defaultLogBatchSize)
+	}
+	if cfg.LogFlushInterval != defaultLogFlushInterval {
+		t.Errorf("LogFlushInterval = %s, want %s", cfg.LogFlushInterval, defaultLogFlushInterval)
+	}
+	if cfg.LogBufferSize != defaultLogBufferSize {
+		t.Errorf("LogBufferSize = %d, want %d", cfg.LogBufferSize, defaultLogBufferSize)
+	}
 }
 
 func TestLoad_FromEnvironment(t *testing.T) {

@@ -11,6 +11,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,6 +21,13 @@ const (
 	defaultGRPCAddr    = ":50051"
 	defaultStartupTO   = 10 * time.Second
 	defaultCacheTTL    = 5 * time.Minute
+
+	// Log ingestion pipeline defaults - see internal/ingest.Config for what
+	// each one actually controls.
+	defaultLogWorkers       = 4
+	defaultLogBatchSize     = 500
+	defaultLogFlushInterval = 2 * time.Second
+	defaultLogBufferSize    = 10000
 )
 
 // Config holds every value the service reads from its environment.
@@ -42,6 +50,14 @@ type Config struct {
 	// CacheTTL is how long a cached customer stays valid. Acts as a safety net
 	// for missed invalidations: a stale entry can never outlive this window.
 	CacheTTL time.Duration
+
+	// LogWorkers, LogBatchSize, LogFlushInterval and LogBufferSize configure
+	// the log ingestion pipeline (internal/ingest). See that package's
+	// Config type for what each one controls.
+	LogWorkers       int
+	LogBatchSize     int
+	LogFlushInterval time.Duration
+	LogBufferSize    int
 }
 
 // CacheEnabled reports whether a Redis URL was configured.
@@ -51,11 +67,15 @@ func (c Config) CacheEnabled() bool { return c.RedisURL != "" }
 // validates the result.
 func Load() (Config, error) {
 	cfg := Config{
-		DatabaseURL:    getEnv("DATABASE_URL", defaultDatabaseURL),
-		RedisURL:       strings.TrimSpace(os.Getenv("REDIS_URL")),
-		GRPCAddr:       getEnv("GRPC_ADDR", defaultGRPCAddr),
-		StartupTimeout: defaultStartupTO,
-		CacheTTL:       defaultCacheTTL,
+		DatabaseURL:      getEnv("DATABASE_URL", defaultDatabaseURL),
+		RedisURL:         strings.TrimSpace(os.Getenv("REDIS_URL")),
+		GRPCAddr:         getEnv("GRPC_ADDR", defaultGRPCAddr),
+		StartupTimeout:   defaultStartupTO,
+		CacheTTL:         defaultCacheTTL,
+		LogWorkers:       defaultLogWorkers,
+		LogBatchSize:     defaultLogBatchSize,
+		LogFlushInterval: defaultLogFlushInterval,
+		LogBufferSize:    defaultLogBufferSize,
 	}
 
 	var err error
@@ -63,6 +83,18 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.CacheTTL, err = getEnvDuration("CACHE_TTL", defaultCacheTTL); err != nil {
+		return Config{}, err
+	}
+	if cfg.LogWorkers, err = getEnvInt("LOG_WORKERS", defaultLogWorkers); err != nil {
+		return Config{}, err
+	}
+	if cfg.LogBatchSize, err = getEnvInt("LOG_BATCH_SIZE", defaultLogBatchSize); err != nil {
+		return Config{}, err
+	}
+	if cfg.LogFlushInterval, err = getEnvDuration("LOG_FLUSH_INTERVAL", defaultLogFlushInterval); err != nil {
+		return Config{}, err
+	}
+	if cfg.LogBufferSize, err = getEnvInt("LOG_BUFFER_SIZE", defaultLogBufferSize); err != nil {
 		return Config{}, err
 	}
 
@@ -85,6 +117,18 @@ func (c Config) validate() error {
 	if c.CacheTTL <= 0 {
 		return fmt.Errorf("CACHE_TTL must be positive, got %s", c.CacheTTL)
 	}
+	if c.LogWorkers <= 0 {
+		return fmt.Errorf("LOG_WORKERS must be positive, got %d", c.LogWorkers)
+	}
+	if c.LogBatchSize <= 0 {
+		return fmt.Errorf("LOG_BATCH_SIZE must be positive, got %d", c.LogBatchSize)
+	}
+	if c.LogFlushInterval <= 0 {
+		return fmt.Errorf("LOG_FLUSH_INTERVAL must be positive, got %s", c.LogFlushInterval)
+	}
+	if c.LogBufferSize <= 0 {
+		return fmt.Errorf("LOG_BUFFER_SIZE must be positive, got %d", c.LogBufferSize)
+	}
 	return nil
 }
 
@@ -106,4 +150,17 @@ func getEnvDuration(key string, fallback time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("%s: invalid duration %q: %w", key, raw, err)
 	}
 	return d, nil
+}
+
+// getEnvInt parses a plain integer, e.g. "500".
+func getEnvInt(key string, fallback int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid integer %q: %w", key, raw, err)
+	}
+	return n, nil
 }
