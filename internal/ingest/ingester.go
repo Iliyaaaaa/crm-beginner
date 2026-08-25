@@ -27,6 +27,15 @@ type Config struct {
 	BufferSize    int           // how many entries the queue can hold
 }
 
+// Submitter is the minimal interface a caller needs to hand log entries to
+// the pipeline. LogHandler depends on this rather than the concrete
+// *Ingester type, so it can be tested with a fake - the same reason every
+// other adapter in this project depends on a domain interface rather than a
+// concrete struct.
+type Submitter interface {
+	Submit(ctx context.Context, e domain.LogEntry) error
+}
+
 // Ingester owns the queue and the workers that drain it.
 type Ingester struct {
 	repo domain.LogRepository
@@ -44,6 +53,9 @@ type Ingester struct {
 	// the second close(ch).
 	stopOnce sync.Once
 }
+
+// Compile-time proof that Ingester satisfies Submitter.
+var _ Submitter = (*Ingester)(nil)
 
 func New(repo domain.LogRepository, cfg Config) *Ingester {
 	// Defensive defaults so a zero-valued Config cannot produce a pipeline
