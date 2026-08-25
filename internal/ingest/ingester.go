@@ -19,6 +19,14 @@ import (
 // decides what to do about it - the pipeline never silently drops an entry.
 var ErrBufferFull = errors.New("log buffer is full")
 
+// Retry timing for a failed flush. Not part of Config: these are an
+// implementation detail of "how patiently do we retry," not a knob callers
+// need to tune per deployment.
+const (
+	initialRetryBackoff = 100 * time.Millisecond
+	maxRetryBackoff     = 5 * time.Second
+)
+
 // Config controls the batching behaviour.
 type Config struct {
 	Workers       int           // how many goroutines drain the queue
@@ -127,50 +135,84 @@ func (i *Ingester) worker(ctx context.Context, id int) {
 			if !ok {
 				// Channel closed by Stop: flush whatever is left and exit.
 				// This is the drain that stops shutdown from losing entries.
-				i.flush(batch, id, "shutdown")
+				i.flush(ctx, batch, id, "shutdown")
 				return
 			}
 			batch = append(batch, e)
 			if len(batch) >= i.cfg.BatchSize {
-				batch = i.flush(batch, id, "full")
+				batch = i.flush(ctx, batch, id, "full")
 			}
 
 		case <-ticker.C:
-			batch = i.flush(batch, id, "timer")
+			batch = i.flush(ctx, batch, id, "timer")
 
 		case <-ctx.Done():
-			i.flush(batch, id, "cancelled")
+			i.flush(ctx, batch, id, "cancelled")
 			return
 		}
 	}
 }
 
-// flush writes the batch and returns a fresh empty one. On failure it logs and
-// drops the batch - step 8 replaces that with retry-and-keep, which is what
-// makes a database outage survivable.
-func (i *Ingester) flush(batch []domain.LogEntry, workerID int, reason string) []domain.LogEntry {
+// flush writes the batch, retrying with exponential backoff until it
+// succeeds. The batch is never dropped and never cleared until the insert
+// actually succeeds - that is what makes a database outage survivable rather
+// than a source of silent data loss.
+//
+// workerCtx is the worker's own long-lived context, used only to notice
+// shutdown WHILE waiting between retries - so a dead database does not make
+// shutdown hang forever. Each individual insert attempt gets its own short,
+// independent timeout instead of workerCtx directly: during shutdown
+// workerCtx may already be cancelled, and the final drain still needs a live
+// context to reach the database with.
+func (i *Ingester) flush(workerCtx context.Context, batch []domain.LogEntry, workerID int, reason string) []domain.LogEntry {
 	if len(batch) == 0 {
 		return batch
 	}
 
-	// Deliberately NOT the worker's ctx: during shutdown that context is
-	// already cancelled, and the final drain still needs to reach the
-	// database. A short independent timeout bounds it instead.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	backoff := initialRetryBackoff
+	for attempt := 1; ; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := i.repo.BulkInsert(attemptCtx, batch)
+		cancel()
 
-	if err := i.repo.BulkInsert(ctx, batch); err != nil {
-		log.Printf("ingester worker %d: flush of %d entries failed (%s): %v",
-			workerID, len(batch), reason, err)
-	} else {
-		log.Printf("ingester worker %d: flushed %d entries (%s)", workerID, len(batch), reason)
+		if err == nil {
+			log.Printf("ingester worker %d: flushed %d entries (%s, attempt %d)",
+				workerID, len(batch), reason, attempt)
+			return make([]domain.LogEntry, 0, i.cfg.BatchSize)
+		}
+
+		log.Printf("ingester worker %d: flush of %d entries failed (%s, attempt %d): %v - retrying in %s",
+			workerID, len(batch), reason, attempt, err, backoff)
+
+		select {
+		case <-time.After(backoff):
+			// keep retrying
+		case <-workerCtx.Done():
+			// Shutting down and the database is still unreachable. Give up
+			// rather than block shutdown forever - this is the one path
+			// where a batch can still be lost.
+			log.Printf("ingester worker %d: giving up on %d entries: shutting down mid-retry",
+				workerID, len(batch))
+			return make([]domain.LogEntry, 0, i.cfg.BatchSize)
+		}
+
+		backoff *= 2
+		if backoff > maxRetryBackoff {
+			backoff = maxRetryBackoff
+		}
 	}
-
-	return make([]domain.LogEntry, 0, i.cfg.BatchSize)
 }
 
 // Stop closes the queue and waits for every worker to drain and exit.
 // Safe to call more than once.
+//
+// If a worker is mid-retry inside flush when Stop is called, closing the
+// queue alone does not interrupt it - only cancelling the context passed to
+// Start does that (flush's retry loop selects on it). In production this is
+// naturally satisfied: App.Close calls Stop only after Run returns, which
+// only happens once the same lifecycle context was already cancelled by the
+// shutdown signal. Calling Stop with a context that is never cancelled, while
+// the repository is failing, will block here until the repository recovers.
 func (i *Ingester) Stop() {
 	i.stopOnce.Do(func() {
 		close(i.ch)

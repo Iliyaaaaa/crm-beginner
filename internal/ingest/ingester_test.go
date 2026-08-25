@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,12 @@ import (
 type fakeRepo struct {
 	mu      sync.Mutex
 	batches [][]domain.LogEntry
+
+	// failCount lets a test script "fail the first N calls, then succeed."
+	// Decremented on every call regardless of size, so it also naturally
+	// counts retries of the SAME batch, not just distinct batches.
+	failCount int
+	failErr   error
 }
 
 var _ domain.LogRepository = (*fakeRepo)(nil)
@@ -22,6 +29,12 @@ var _ domain.LogRepository = (*fakeRepo)(nil)
 func (f *fakeRepo) BulkInsert(ctx context.Context, entries []domain.LogEntry) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.failCount > 0 {
+		f.failCount--
+		return f.failErr
+	}
+
 	// Copy: the ingester reuses its batch slice, so storing the slice header
 	// alone would let later writes mutate what we recorded.
 	cp := make([]domain.LogEntry, len(entries))
@@ -199,4 +212,78 @@ func TestStopIsIdempotent(t *testing.T) {
 	// Assert: nothing to check explicitly - reaching this line at all IS the
 	// assertion. A second close(ch) without the sync.Once guard would panic,
 	// and an unrecovered panic fails the test automatically.
+}
+
+// TestFlushRetriesAndSucceeds is task 3's core guarantee, proven directly:
+// a flush that fails twice must not lose the batch - it keeps the same
+// entries and retries until BulkInsert finally succeeds.
+func TestFlushRetriesAndSucceeds(t *testing.T) {
+	// Arrange: fail the first 2 attempts, then accept
+	repo := &fakeRepo{failCount: 2, failErr: errors.New("connection refused")}
+	ing := New(repo, Config{
+		Workers: 1, BatchSize: 3, FlushInterval: time.Hour, BufferSize: 10,
+	})
+	ing.Start(context.Background())
+
+	// Act: fill exactly one batch, forcing a "full" flush that will fail
+	// twice internally before this call returns
+	for n := 0; n < 3; n++ {
+		if err := ing.Submit(context.Background(), entry("m")); err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+	}
+	ing.Stop() // waits for the worker, including its retries, to finish
+
+	// Assert: despite 2 failures, all 3 entries eventually landed - nothing
+	// was dropped, and no entries were duplicated.
+	if got := repo.batchCount(); got != 1 {
+		t.Fatalf("expected exactly 1 successful batch, got %d", got)
+	}
+	if got := repo.totalEntries(); got != 3 {
+		t.Fatalf("expected all 3 entries to survive the retries, got %d", got)
+	}
+}
+
+// TestFlushGivesUpOnShutdownIfStillFailing proves the OTHER half of the
+// contract: retrying must not hang shutdown forever if the database never
+// recovers. Stop() must still return.
+func TestFlushGivesUpOnShutdownIfStillFailing(t *testing.T) {
+	// Arrange: BulkInsert always fails
+	repo := &fakeRepo{failCount: 1 << 30, failErr: errors.New("db is gone")}
+	ing := New(repo, Config{
+		Workers: 1, BatchSize: 3, FlushInterval: time.Hour, BufferSize: 10,
+	})
+	// A cancellable context, not context.Background(). This mirrors real
+	// usage: in production the app's lifecycle context is cancelled by the
+	// shutdown signal BEFORE Close() calls Stop() - ctx cancellation is what
+	// interrupts an in-progress retry wait, Stop() alone only closes the
+	// channel and cannot interrupt a worker already blocked inside flush.
+	ctx, cancel := context.WithCancel(context.Background())
+	ing.Start(ctx)
+	for n := 0; n < 3; n++ {
+		if err := ing.Submit(ctx, entry("m")); err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+	}
+
+	// Act: cancel first (the shutdown signal), then Stop (the drain) -
+	// exactly the order App.Close() produces.
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		ing.Stop()
+		close(done)
+	}()
+
+	// Assert: Stop returns promptly once ctx is cancelled, instead of
+	// blocking through however many retries a dead database would otherwise
+	// cause.
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() did not return after ctx was cancelled - retry loop is not honouring shutdown")
+	}
+	if got := repo.totalEntries(); got != 0 {
+		t.Fatalf("expected the failing batch to be given up on (0 entries stored), got %d", got)
+	}
 }
