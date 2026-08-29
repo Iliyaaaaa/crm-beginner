@@ -26,27 +26,19 @@ const uniqueViolation = "23505"
 
 // CustomerRepository holds the connection pool. A pool is safe for concurrent
 // use by many goroutines, which is why the server needs no mutex of its own.
+//
+// The pool is opened once and shared with LogRepository - see
+// postgres.NewPool. Because of that, CustomerRepository does not own or close
+// it; whoever called NewPool is responsible for closing it.
 type CustomerRepository struct {
 	pool *pgxpool.Pool
 }
 
-// NewCustomerRepository opens the pool and verifies the database is actually
-// reachable. pgxpool.New alone does not connect, so without the Ping a bad DSN
-// would only surface on the first request.
-func NewCustomerRepository(ctx context.Context, dsn string) (*CustomerRepository, error) {
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		return nil, fmt.Errorf("create connection pool: %w", err)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("ping database: %w", err)
-	}
-	return &CustomerRepository{pool: pool}, nil
+// NewCustomerRepository wraps an already-open, already-verified pool. Use
+// postgres.NewPool to create one.
+func NewCustomerRepository(pool *pgxpool.Pool) *CustomerRepository {
+	return &CustomerRepository{pool: pool}
 }
-
-// Close releases every connection in the pool.
-func (r *CustomerRepository) Close() { r.pool.Close() }
 
 // Create inserts a row and returns it, including the id and timestamps the
 // database generated. c.ID is ignored - BIGSERIAL assigns it.

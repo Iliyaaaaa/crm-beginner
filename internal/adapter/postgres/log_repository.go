@@ -13,31 +13,18 @@ import (
 // Compile-time proof that this type satisfies the port.
 var _ domain.LogRepository = (*LogRepository)(nil)
 
-// LogRepository holds its own connection pool, separate from
-// CustomerRepository's. Simpler than sharing one pool across both - the cost
-// is a second small pool of connections, which is a fine trade for a service
-// this size. If that ever matters, both repositories can be changed to accept
-// an already-open *pgxpool.Pool instead of opening their own.
+// LogRepository holds the connection pool, shared with CustomerRepository -
+// see postgres.NewPool. Because of that, LogRepository does not own or close
+// it; whoever called NewPool is responsible for closing it.
 type LogRepository struct {
 	pool *pgxpool.Pool
 }
 
-// NewLogRepository opens the pool and verifies the database is reachable,
-// same as NewCustomerRepository.
-func NewLogRepository(ctx context.Context, dsn string) (*LogRepository, error) {
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		return nil, fmt.Errorf("create connection pool: %w", err)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("ping database: %w", err)
-	}
-	return &LogRepository{pool: pool}, nil
+// NewLogRepository wraps an already-open, already-verified pool. Use
+// postgres.NewPool to create one.
+func NewLogRepository(pool *pgxpool.Pool) *LogRepository {
+	return &LogRepository{pool: pool}
 }
-
-// Close releases every connection in the pool.
-func (r *LogRepository) Close() { r.pool.Close() }
 
 // BulkInsert writes every entry in one round trip using Postgres's binary
 // COPY protocol - the fastest bulk-load path pgx offers, and the whole reason

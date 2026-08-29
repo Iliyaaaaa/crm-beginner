@@ -17,6 +17,7 @@ import (
 	"log"
 	"net"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
@@ -32,7 +33,11 @@ import (
 
 // App owns the assembled dependency graph and the resources that need closing.
 type App struct {
-	cfg  config.Config
+	cfg config.Config
+	// pool is the ONE Postgres connection pool for the whole service. repo and
+	// logRepo both draw from it - see postgres.NewPool for why sharing one
+	// pool (instead of each repository opening its own) matters.
+	pool *pgxpool.Pool
 	repo *postgres.CustomerRepository
 	// Deliberately the concrete type, not domain.CustomerCache: a nil pointer
 	// stored in an interface makes the interface itself non-nil, so a
@@ -56,12 +61,13 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// --- outbound adapters -------------------------------------------------
 
-	repo, err := postgres.NewCustomerRepository(startCtx, cfg.DatabaseURL)
+	pool, err := postgres.NewPool(startCtx, cfg.DatabaseURL, int32(cfg.DBMaxConns))
 	if err != nil {
 		return nil, fmt.Errorf("postgres: %w", err)
 	}
-	a.repo = repo
-	log.Println("connected to postgres")
+	a.pool = pool
+	a.repo = postgres.NewCustomerRepository(a.pool)
+	log.Printf("connected to postgres (max_conns=%d)", cfg.DBMaxConns)
 
 	if cfg.CacheEnabled() {
 		cache, err := redisadapter.NewCustomerCache(startCtx, cfg.RedisURL, cfg.CacheTTL)
@@ -75,13 +81,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		log.Println("REDIS_URL not set, caching disabled")
 	}
 
-	logRepo, err := postgres.NewLogRepository(startCtx, cfg.DatabaseURL)
-	if err != nil {
-		a.Close()
-		return nil, fmt.Errorf("log repository: %w", err)
-	}
-	a.logRepo = logRepo
-	log.Println("connected to postgres (logs)")
+	a.logRepo = postgres.NewLogRepository(a.pool)
 
 	// The ingester's lifetime is the WHOLE app, not just startup - it must
 	// keep running after New returns, so it gets the long-lived ctx, not
@@ -155,10 +155,9 @@ func (a *App) Run(ctx context.Context) error {
 // Close releases resources in reverse construction order. Safe to call on a
 // partially built App - every field is nil-checked.
 //
-// The ingester is stopped FIRST, before either database connection closes.
-// Stop drains any in-flight batch, and that drain still needs a live
-// connection to write to - closing the pools first would make the final
-// flush fail every time.
+// The ingester is stopped FIRST, before the pool closes. Stop drains any
+// in-flight batch, and that drain still needs a live connection to write to -
+// closing the pool first would make the final flush fail every time.
 func (a *App) Close() {
 	if a.ingester != nil {
 		a.ingester.Stop()
@@ -168,10 +167,10 @@ func (a *App) Close() {
 			log.Printf("closing redis: %v", err)
 		}
 	}
-	if a.logRepo != nil {
-		a.logRepo.Close()
-	}
-	if a.repo != nil {
-		a.repo.Close()
+	// repo and logRepo both point at this one pool and own none of it
+	// themselves (see postgres.NewPool), so closing it here is the only
+	// close either of them needs.
+	if a.pool != nil {
+		a.pool.Close()
 	}
 }

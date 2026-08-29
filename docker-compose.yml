@@ -58,7 +58,12 @@ services:
       # "postgres" and "redis" here are not localhost - they are the other
       # services' names, resolved through Docker's internal DNS. Compare with
       # the values used when running locally, which say "localhost" instead.
-      DATABASE_URL: postgres://crm:crm@postgres:5432/crm?sslmode=disable
+      DATABASE_URL: ${DATABASE_URL:-postgres://crm:crm@postgres:5432/crm?sslmode=disable}
+      # Caps the ONE shared Postgres pool (customer + log repositories both
+      # draw from it - see internal/adapter/postgres/pool.go). 40 was measured
+      # under load to give the best throughput without hitting Postgres's own
+      # max_connections=100 ceiling.
+      DB_MAX_CONNS: ${DB_MAX_CONNS:-40}
       REDIS_URL: redis://redis:6379/0
       # ${VAR:-default} takes the value from your shell if set, otherwise the
       # default. This is what makes `CACHE_TTL=45s docker compose up -d`

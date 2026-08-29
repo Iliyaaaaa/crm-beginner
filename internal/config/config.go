@@ -22,6 +22,13 @@ const (
 	defaultStartupTO   = 10 * time.Second
 	defaultCacheTTL    = 5 * time.Minute
 
+	// defaultDBMaxConns caps the shared Postgres pool. Left at pgx's own
+	// default (max(4, NumCPU)) this becomes the write-throughput ceiling under
+	// load; 40 was measured under internal/load testing to give the best
+	// throughput without hitting Postgres's own max_connections=100 ceiling
+	// (this pool is the ONLY one now - see postgres.NewPool).
+	defaultDBMaxConns = 40
+
 	// Log ingestion pipeline defaults - see internal/ingest.Config for what
 	// each one actually controls.
 	defaultLogWorkers       = 4
@@ -35,6 +42,12 @@ type Config struct {
 	// DatabaseURL is the Postgres DSN. Required - the service cannot run
 	// without a database.
 	DatabaseURL string
+
+	// DBMaxConns caps the shared Postgres connection pool (see
+	// postgres.NewPool). Both CustomerRepository and LogRepository draw from
+	// this one pool, so this is the total connection budget for the whole
+	// service, not a per-repository limit.
+	DBMaxConns int
 
 	// RedisURL is optional. Empty means caching is disabled, which is a
 	// supported mode: a cache is an optimisation, not a dependency.
@@ -68,6 +81,7 @@ func (c Config) CacheEnabled() bool { return c.RedisURL != "" }
 func Load() (Config, error) {
 	cfg := Config{
 		DatabaseURL:      getEnv("DATABASE_URL", defaultDatabaseURL),
+		DBMaxConns:       defaultDBMaxConns,
 		RedisURL:         strings.TrimSpace(os.Getenv("REDIS_URL")),
 		GRPCAddr:         getEnv("GRPC_ADDR", defaultGRPCAddr),
 		StartupTimeout:   defaultStartupTO,
@@ -79,6 +93,9 @@ func Load() (Config, error) {
 	}
 
 	var err error
+	if cfg.DBMaxConns, err = getEnvInt("DB_MAX_CONNS", defaultDBMaxConns); err != nil {
+		return Config{}, err
+	}
 	if cfg.StartupTimeout, err = getEnvDuration("STARTUP_TIMEOUT", defaultStartupTO); err != nil {
 		return Config{}, err
 	}
@@ -107,6 +124,9 @@ func Load() (Config, error) {
 func (c Config) validate() error {
 	if strings.TrimSpace(c.DatabaseURL) == "" {
 		return fmt.Errorf("DATABASE_URL must not be empty")
+	}
+	if c.DBMaxConns <= 0 {
+		return fmt.Errorf("DB_MAX_CONNS must be positive, got %d", c.DBMaxConns)
 	}
 	if strings.TrimSpace(c.GRPCAddr) == "" {
 		return fmt.Errorf("GRPC_ADDR must not be empty")

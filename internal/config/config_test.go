@@ -27,6 +27,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.DatabaseURL != defaultDatabaseURL {
 		t.Errorf("DatabaseURL = %q, want %q", cfg.DatabaseURL, defaultDatabaseURL)
 	}
+	if cfg.DBMaxConns != defaultDBMaxConns {
+		t.Errorf("DBMaxConns = %d, want %d", cfg.DBMaxConns, defaultDBMaxConns)
+	}
 	if cfg.GRPCAddr != defaultGRPCAddr {
 		t.Errorf("GRPCAddr = %q, want %q", cfg.GRPCAddr, defaultGRPCAddr)
 	}
@@ -56,6 +59,7 @@ func TestLoad_Defaults(t *testing.T) {
 func TestLoad_FromEnvironment(t *testing.T) {
 	// Arrange
 	t.Setenv("DATABASE_URL", "postgres://user:pw@db:5432/app")
+	t.Setenv("DB_MAX_CONNS", "80")
 	t.Setenv("REDIS_URL", "redis://cache:6379/0")
 	t.Setenv("GRPC_ADDR", ":9090")
 	t.Setenv("STARTUP_TIMEOUT", "30s")
@@ -70,6 +74,9 @@ func TestLoad_FromEnvironment(t *testing.T) {
 	}
 	if cfg.DatabaseURL != "postgres://user:pw@db:5432/app" {
 		t.Errorf("DatabaseURL = %q", cfg.DatabaseURL)
+	}
+	if cfg.DBMaxConns != 80 {
+		t.Errorf("DBMaxConns = %d, want 80", cfg.DBMaxConns)
 	}
 	if cfg.GRPCAddr != ":9090" {
 		t.Errorf("GRPCAddr = %q, want :9090", cfg.GRPCAddr)
