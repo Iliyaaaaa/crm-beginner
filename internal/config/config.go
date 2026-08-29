@@ -24,10 +24,13 @@ const (
 
 	// defaultDBMaxConns caps the shared Postgres pool. Left at pgx's own
 	// default (max(4, NumCPU)) this becomes the write-throughput ceiling under
-	// load; 40 was measured under internal/load testing to give the best
-	// throughput without hitting Postgres's own max_connections=100 ceiling
-	// (this pool is the ONLY one now - see postgres.NewPool).
-	defaultDBMaxConns = 40
+	// load. 80 was measured under load testing to give the best throughput
+	// without hitting Postgres's own max_connections=100 ceiling - back then
+	// as two separate pools of 40 each (2x40=80 actual connections); now that
+	// both repositories share ONE pool (see postgres.NewPool), that same
+	// budget of 80 has to live on this single value, leaving 20 connections
+	// of headroom under Postgres's ceiling for psql, migrations, etc.
+	defaultDBMaxConns = 80
 
 	// Log ingestion pipeline defaults - see internal/ingest.Config for what
 	// each one actually controls.
