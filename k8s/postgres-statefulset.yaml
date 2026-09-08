@@ -1,0 +1,137 @@
+# Postgres: the source of truth, as a StatefulSet with its own disk.
+#
+# This is the compose service translated:
+#
+#   postgres:
+#     image: postgres:17
+#     environment: POSTGRES_DB/USER/PASSWORD   -> envFrom a Secret
+#     volumes:
+#       - pgdata:/var/lib/postgresql/data      -> volumeClaimTemplates
+#       - ./db/migrations:/docker-entrypoint-initdb.d -> a ConfigMap volume
+#     healthcheck: pg_isready                  -> readinessProbe
+#
+# Why StatefulSet and not Deployment: a Deployment treats its pods as
+# interchangeable and disposable. A database is neither. It has an identity
+# (postgres-0, always that name) and a disk that must reattach to the SAME pod
+# after a restart. Only a StatefulSet guarantees both.
+apiVersion: apps/v1
+kind: StatefulSet
+
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+
+spec:
+  # Points at the Service created in the next step. Required by a StatefulSet:
+  # it is what gives each pod a stable DNS name of the form
+  #   postgres-0.postgres.crm.svc.cluster.local
+  # The Service does not have to exist yet - the pod starts either way, it just
+  # is not resolvable by that name until it does.
+  serviceName: postgres
+
+  # One Postgres. More replicas would NOT give you a bigger database - each pod
+  # gets its OWN empty disk from the volumeClaimTemplate below, so you would
+  # get N independent databases, not one replicated one. Real replication needs
+  # streaming replication configured between them, which is a much larger topic.
+  replicas: 1
+
+  # Same label-matching rule as the Redis Deployment: this must equal
+  # .spec.template.metadata.labels exactly.
+  selector:
+    matchLabels:
+      app: postgres
+
+  template:
+    metadata:
+      labels:
+        app: postgres
+
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17
+
+          # Pulls in POSTGRES_DB, POSTGRES_USER and POSTGRES_PASSWORD from the
+          # Secret in one line - the payoff for naming those keys exactly as
+          # the postgres image expects them. Without envFrom this would be
+          # three separate secretKeyRef blocks.
+          #
+          # NOTE: the image reads these ONLY when initialising an empty data
+          # directory. Changing the Secret later has no effect on an already
+          # initialised database.
+          envFrom:
+            - secretRef:
+                name: postgres-secret
+
+          env:
+            # Postgres refuses to initialise into a directory that is not
+            # empty, and some storage backends drop a lost+found directory into
+            # every fresh volume. Pointing PGDATA at a SUBDIRECTORY of the
+            # mount sidesteps that entirely: Postgres owns a clean folder it
+            # created itself, inside the mounted volume.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+
+          ports:
+            - name: postgres
+              containerPort: 5432
+
+          volumeMounts:
+            # The persistent disk, from volumeClaimTemplates below.
+            - name: data
+              mountPath: /var/lib/postgresql/data
+
+            # The migration files. The postgres image runs every .sql file it
+            # finds here in filename order - which is why they are numbered
+            # 0001_, 0002_, 0003_ - but ONLY on first initialisation of an
+            # empty data directory. This is the K8s replacement for compose's
+            # bind mount of ./db/migrations; a cluster has no laptop to mount
+            # a directory from, so the files travel inside a ConfigMap instead.
+            - name: migrations
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+
+          # Mirrors compose's healthcheck. As a readiness probe it controls
+          # whether the Service sends traffic here - it does not restart the
+          # container. That distinction matters on startup: while Postgres is
+          # replaying its migrations it is alive but not ready.
+          #
+          # The -U and -d values must match the Secret. pg_isready only asks
+          # "is the server accepting connections", it does not authenticate.
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "iliya", "-d", "crmdb"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+
+      volumes:
+        # A ConfigMap surfaced as a directory of files: each key in the
+        # ConfigMap becomes one file, with the key as its filename. That is why
+        # `kubectl create configmap --from-file=db/migrations/` produced keys
+        # named 0001_create_customers.sql and so on.
+        - name: migrations
+          configMap:
+            name: postgres-migrations
+
+  # The StatefulSet-specific piece. Instead of you writing a PVC, the
+  # StatefulSet creates ONE PER POD automatically, named <template>-<set>-<n>,
+  # so this produces a PVC called "data-postgres-0".
+  #
+  # These PVCs are deliberately NOT deleted when the StatefulSet is deleted.
+  # That is a safety feature: `kubectl delete statefulset postgres` must never
+  # be a way to accidentally destroy a database. Deleting the data is a
+  # separate, explicit `kubectl delete pvc`.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        # One node mounts it read-write. Correct for Postgres, which must never
+        # have two instances writing the same files.
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+        # No storageClassName: the cluster's default ("standard", backed by
+        # minikube-hostpath) provisions the PersistentVolume automatically.

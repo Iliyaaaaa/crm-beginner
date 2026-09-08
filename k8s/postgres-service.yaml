@@ -1,0 +1,20 @@
+apiVersion: v1        # NOT apps/v1 - Service is a core object, older than
+                      # the apps/ group that Deployment lives in.
+kind: Service
+
+metadata:
+  name: postgres         # THIS is the DNS name other pods will use.
+  labels:
+    app: postgres
+
+spec:
+  type: ClusterIP
+
+  selector:
+    app: postgres
+
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+      protocol: TCP
