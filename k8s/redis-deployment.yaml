@@ -1,0 +1,76 @@
+# Redis: the cache layer, as a Kubernetes Deployment.
+#
+# This is the compose service translated one-for-one:
+#
+#   redis:
+#     image: redis:7-alpine
+#     command: redis-server --save "" --appendonly no
+#
+# A Deployment does not run containers itself. It creates a ReplicaSet, which
+# creates Pods - so this one file produces three objects in `kubectl get all`.
+apiVersion: apps/v1
+kind: Deployment
+
+# metadata about the DEPLOYMENT object itself (not the pods it makes).
+metadata:
+  name: redis
+  labels:
+    app: redis
+
+spec:
+  # Exactly one. Redis pods do NOT share memory: with 2+ replicas the Service
+  # would round-robin between them, so a key written to one pod would be
+  # missing on a read served by another - the cache-aside lookup in
+  # CustomerService.GetByID would see random misses. Scaling a cache needs
+  # Redis clustering, not more pods.
+  replicas: 1
+
+  # How the Deployment finds the pods it owns: by LABEL, never by name. This
+  # block must match .spec.template.metadata.labels below exactly, or the API
+  # server rejects the manifest.
+  selector:
+    matchLabels:
+      app: redis
+
+  # Everything under `template` IS a Pod definition. The Deployment's whole job
+  # is "keep `replicas` copies of this template running".
+  template:
+    metadata:
+      # Labels stamped onto every pod created from this template. The selector
+      # above matches these, and the Service in the next step will too.
+      labels:
+        app: redis
+
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+
+          # Docker's CMD is Kubernetes' `args` (Docker's ENTRYPOINT is
+          # Kubernetes' `command`). The redis image's entrypoint is a shell
+          # script and its CMD is `redis-server`, so overriding args here is
+          # the exact equivalent of compose's `command:` line.
+          #
+          # Each flag AND each value is its own list item - this is a list of
+          # arguments, not a command line to be split.
+          args:
+            - "redis-server"
+            # Run as a pure in-memory cache. --save "" disables RDB snapshots
+            # and --appendonly no disables the write-ahead log, so nothing
+            # survives a restart. Postgres is the source of truth; a cached
+            # entry outliving a restart would be a stale-data bug.
+            - "--save"
+            - ""
+            # "no" MUST be quoted. Unquoted, YAML parses no/yes/on/off as
+            # booleans, and Kubernetes then rejects the manifest because args
+            # must be strings. (The classic YAML trap - the same rule is why
+            # Norway's country code "NO" breaks configs.)
+            - "--appendonly"
+            - "no"
+
+          # Documentation only: this does NOT open or publish the port. It
+          # tells readers (and some tooling) what the container listens on.
+          # Reaching Redis from other pods is the Service's job, next step.
+          ports:
+            - name: redis
+              containerPort: 6379

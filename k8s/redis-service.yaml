@@ -1,0 +1,50 @@
+# Redis: the stable network identity in front of the Redis pod.
+#
+# This replaces compose's internal DNS. In docker-compose, "redis" in
+# REDIS_URL=redis://redis:6379/0 resolved to the redis container. Here, that
+# same hostname resolves to this Service - so the application's existing
+# config keeps working with no change at all.
+#
+# Why this object has to exist: pods are disposable. Every restart gives the
+# pod a brand-new IP, so nothing may ever depend on a pod's address. A Service
+# is a permanent name and IP that automatically tracks whichever pods are
+# alive right now.
+apiVersion: v1        # NOT apps/v1 - Service is a core object, older than
+                      # the apps/ group that Deployment lives in.
+kind: Service
+
+metadata:
+  name: redis         # THIS is the DNS name other pods will use.
+  labels:
+    app: redis
+
+spec:
+  # ClusterIP: reachable only from inside the cluster. Correct for a cache -
+  # nothing outside should ever talk to Redis directly. (The other types:
+  # NodePort opens a port on every node, LoadBalancer asks the cloud provider
+  # for a real load balancer. Those are for things the public must reach.)
+  type: ClusterIP
+
+  # How the Service finds pods to send traffic to: by LABEL. It matches the
+  # labels stamped on the pods by redis-deployment.yaml's pod template.
+  #
+  # There is NO link between this Service and that Deployment beyond this
+  # label match - they are independent objects that happen to agree on a
+  # label. Get this wrong and the Service still creates successfully, it just
+  # silently points at nothing.
+  selector:
+    app: redis
+
+  ports:
+    - name: redis
+      # port: what THIS SERVICE listens on. Other pods connect to redis:6379.
+      port: 6379
+      # targetPort: what the POD listens on - where traffic is forwarded to.
+      # They are usually the same number, but they are different ideas, and
+      # this is the pair people mix up most often.
+      #
+      # This references the port NAME ("redis") declared in the Deployment's
+      # containerPort, rather than repeating the number 6379. If the container
+      # ever moves to a different port, only the Deployment changes.
+      targetPort: redis
+      protocol: TCP
