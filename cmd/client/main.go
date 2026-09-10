@@ -18,6 +18,12 @@ func main() {
 	conn, err := grpc.NewClient(
 		"localhost:50051",
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		// The default "dns" resolver also asks the network's DNS server for a
+		// TXT record (_grpc_config.localhost) and waits for the answer before
+		// connecting. Some home routers never answer that query, which stalls
+		// every call until its deadline. This client uses no DNS-provided
+		// service config, so skip that lookup entirely.
+		grpc.WithDisableServiceConfig(),
 	)
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
