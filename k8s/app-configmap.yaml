@@ -1,0 +1,74 @@
+# crm-server: every NON-secret setting the application reads.
+#
+# This replaces the `environment:` block of the server service in
+# docker-compose.yml. Every key here is read by internal/config/config.go, and
+# the key names must match what that file looks for EXACTLY - a misspelled key
+# is not an error, the app just silently falls back to its built-in default.
+#
+# DATABASE_URL is deliberately NOT here: it embeds the database password, so it
+# lives in a Secret (next step). The rule: credentials -> Secret, everything
+# else -> ConfigMap.
+#
+# Unlike the Postgres Secret, this file SHOULD be committed to git - there is
+# nothing sensitive in it, and it keeps the cluster's configuration visible
+# next to the rest of the project.
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: crm-server-config
+  labels:
+    app: crm-server
+
+# Every value is quoted, on purpose. A ConfigMap's data may only contain
+# STRINGS, but unquoted YAML turns 80 into a number (and no/yes into booleans),
+# which kubectl then rejects. Quoting everything - even values that would
+# survive unquoted - means never having to remember which ones are risky.
+#
+# Remember: the app reads these ONCE, at startup. Editing this ConfigMap does
+# not reach pods that are already running; they need
+#   kubectl rollout restart deployment/crm-server
+data:
+  # --- network -------------------------------------------------------------
+
+  GRPC_ADDR: ":50051"
+
+  # "redis" is the Service from redis-service.yaml, resolved by cluster DNS -
+  # the same trick docker-compose used. Leaving this key out entirely would
+  # not be an error: the app treats an empty REDIS_URL as "caching disabled".
+  REDIS_URL: "redis://redis:6379/0"
+
+  # --- startup and caching -------------------------------------------------
+
+  STARTUP_TIMEOUT: "10s"
+  CACHE_TTL: "5m"
+
+  # --- database connection pool --------------------------------------------
+
+  # The pool for ONE pod - so the real total is this number x pod count.
+  # Sized for up to 3 replicas, from what Postgres actually allows:
+  #
+  #   max_connections                   100
+  #   - superuser_reserved_connections    3   (kept back for admins only)
+  #   - headroom for psql, migrations   ~17
+  #   = budget for the app              ~80
+  #
+  #   pods at peak = 3 replicas + 1 extra during a rolling update = 4
+  #   80 / 4 = 20 per pod
+  #
+  # The rolling-update pod is the part that is easy to miss: Kubernetes starts
+  # the new pod BEFORE removing an old one, so for a moment there are 4.
+  # 25 would be 3 x 25 = 75 normally, but 4 x 25 = 100 during a rollout.
+  #
+  # This is lower than the 80 in config.go and docker-compose on purpose: those
+  # run ONE instance, which gets the whole budget to itself. Same image,
+  # different setting per environment - exactly what a ConfigMap is for.
+  # Scaling beyond 3 replicas means recalculating this.
+  DB_MAX_CONNS: "20"
+
+  # --- log ingestion pipeline (see internal/ingest) ------------------------
+
+  LOG_WORKERS: "4"
+  LOG_BATCH_SIZE: "500"
+  LOG_FLUSH_INTERVAL: "2s"
+  LOG_BUFFER_SIZE: "10000"
