@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: crm-server
+  labels:
+    app: crm-server
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: crm-server
+
+  template:
+    metadata:
+      labels:
+        app: crm-server
+
+    spec:
+      containers:
+        - name: crm-server
+          image: crm-service:v1
+
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: grpc
+              containerPort: 50051
+
+          envFrom:
+            - configMapRef:
+                name: crm-server-config
+            - secretRef:
+                name: crm-server-secret
