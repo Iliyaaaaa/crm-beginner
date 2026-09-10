@@ -1,0 +1,35 @@
+# crm-server: the stable network identity in front of the application pods.
+#
+# Same pattern as redis-service.yaml and postgres-service.yaml. Other pods
+# reach the app as crm-server:50051, whatever the pods' IPs happen to be right
+# now - and `kubectl port-forward service/crm-server` (step 14) goes through
+# this Service too.
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: crm-server
+  labels:
+    app: crm-server
+
+spec:
+  # Inside the cluster only. Public access would come from an Ingress later,
+  # not from changing this type.
+  type: ClusterIP
+
+  # Must match the pod labels in crm-server-deployment.yaml. With several
+  # replicas, the Service spreads connections across every pod that matches.
+  selector:
+    app: crm-server
+
+  ports:
+    - name: grpc
+      port: 50051        # what clients dial: crm-server:50051
+      targetPort: grpc   # the NAMED containerPort in the Deployment
+      protocol: TCP
+
+  # A gRPC caveat worth knowing before scaling (step 17): a Service balances
+  # per TCP CONNECTION, not per request. gRPC keeps one long-lived HTTP/2
+  # connection and sends every request over it, so a client with a single
+  # connection always lands on the same pod. Spreading individual requests
+  # needs client-side balancing or a service mesh.
