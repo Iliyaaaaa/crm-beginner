@@ -34,3 +34,33 @@ spec:
                 name: crm-server-config
             - secretRef:
                 name: crm-server-secret
+
+          # "Should traffic come to me?" While the app is still connecting to
+          # Postgres and Redis it is alive but not ready, and this keeps the
+          # Service from sending requests that would fail. It is also what
+          # makes a rolling update zero-downtime: an old pod is only removed
+          # once the new one reports ready.
+          #
+          # tcpSocket, not grpc: a native grpc probe needs the app to register
+          # the standard grpc.health.v1.Health service, which this code does
+          # not do yet, so that probe would fail every check and restart a
+          # healthy pod. TCP only proves the port accepts connections.
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          # "Am I broken?" A failure here KILLS the container, so these numbers
+          # are deliberately more generous: an over-eager liveness probe kills
+          # healthy pods that are merely busy, moving their traffic onto the
+          # remaining pods until the whole service collapses one pod at a time.
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
