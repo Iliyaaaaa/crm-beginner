@@ -14,6 +14,11 @@ The mental shift that makes all of it make sense:
 > That loop is called **reconciliation**, and it is why K8s self-heals.
 > You never tell it to restart anything.
 
+**Status: Parts A-D are done.** The service runs on minikube with Redis,
+Postgres, config, secrets, probes, 3 replicas, rolling updates and resource
+limits. Part E is optional. Everything that went wrong on the way is collected
+at the end, under "Gotchas actually hit".
+
 ---
 
 # Three facts about THIS project that shape the plan
@@ -125,6 +130,17 @@ learning, a plain Secret is the right call.
 
 **Verify:** `kubectl describe secret` shows the keys and hides the values.
 
+**Quote the value in single quotes.** In zsh, `$` starts a variable, so an
+unquoted (or double-quoted) `Iliya$2006` silently becomes `Iliya` - the
+password is created truncated, with no error, and the mismatch only surfaces
+later as `password authentication failed`. Single quotes are the only form
+that keeps the value intact.
+
+**Use the exact key names** `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`
+with underscores. A hyphen (`POSTGRES-DB`) is not a valid environment variable
+name, so `envFrom` skips that key without failing, and Postgres quietly names
+the database after the user instead.
+
 ## Step 6 — Deploy Postgres as a StatefulSet with storage
 
 A **StatefulSet** for `postgres:17` with a `volumeClaimTemplate` mounted at
@@ -138,6 +154,12 @@ stable names (`postgres-0`) and per-pod storage.
 This replaces compose's `volumes: pgdata:`. Same idea, different mechanism:
 a **PersistentVolumeClaim** is a request for storage, bound to a
 **PersistentVolume**, which is the actual disk.
+
+**Do Step 8's ConfigMap FIRST.** Postgres runs the migration files only while
+initialising an empty data directory, so create the `postgres-migrations`
+ConfigMap and mount it in this StatefulSet from the start. Adding it after the
+PVC exists does nothing - the only fix then is deleting the PVC and starting
+over.
 
 **Verify:** `kubectl get pvc` shows `Bound`; `postgres-0` is `Running`.
 
@@ -207,7 +229,18 @@ image means changing a setting needs no rebuild.
 A Secret holding `DATABASE_URL`.
 
 **Why:** this is the split to internalise - **ConfigMap for settings, Secret for
-credentials**. `DATABASE_URL` embeds `crm:crm@`, which makes it a credential.
+credentials**. `DATABASE_URL` embeds the password, which makes it a credential.
+
+**The user, password and database name must match the Step 5 Secret exactly.**
+A mismatch does not look like a typo: Postgres is perfectly healthy and the app
+sits in `CrashLoopBackOff` with `password authentication failed`.
+
+**Quoting and encoding.** Wrap the whole `--from-literal=...` in single quotes:
+zsh treats `?` as a wildcard (so `?sslmode=disable` fails with
+`no matches found`) and `$` as a variable. Inside the URL itself, `$` is
+allowed as-is - Go's URL parser accepts it, and `%24` works too - but `/`, `?`,
+`#`, `%` and spaces in a password must be percent-encoded or the URL cannot be
+parsed.
 
 ## Step 12 — Deploy the app
 
@@ -369,3 +402,93 @@ Kubernetes tells you what went wrong.
 Work through the steps in sequence: each depends on the one before. Steps 3-4
 (Redis) teach the Deployment + Service pattern that Steps 12-13 (the app)
 repeat, so the hard parts get easier as you go.
+
+---
+
+# The files this produced
+
+| File | What it holds |
+| --- | --- |
+| `k8s/redis-deployment.yaml` | Redis Deployment (compose's `command:` becomes `args:`) |
+| `k8s/redis-service.yaml` | ClusterIP Service `redis` |
+| `k8s/postgres-statefulset.yaml` | Postgres StatefulSet, PVC template, migrations mount, `pg_isready` probe |
+| `k8s/postgres-service.yaml` | ClusterIP Service `postgres` |
+| `k8s/app-configmap.yaml` | The 9 non-secret settings, plus `GOMAXPROCS` and `GOMEMLIMIT` |
+| `k8s/app-deployment.yaml` | The app Deployment: image, envFrom, probes, resources |
+| `k8s/crm-server-service.yaml` | ClusterIP Service `crm-server` |
+
+Two Secrets are deliberately **not** files: `postgres-secret` and
+`crm-server-secret` are created with `kubectl create secret`, so no password
+ever reaches this public repository.
+
+---
+
+# Gotchas actually hit
+
+Every one of these cost real debugging time.
+
+**1. zsh ate part of a password (Steps 5 and 11).** `Iliya$2006` became
+`Iliya`, because zsh expanded `$2006` as a variable and found nothing. No
+error, no warning. Always single-quote values containing `$`.
+
+**2. `POSTGRES-DB` with a hyphen was silently ignored (Step 5).** Hyphens are
+invalid in environment variable names, so `envFrom` skipped the key.
+
+**3. Migrations never ran (Steps 6 and 8).** The ConfigMap has to exist and be
+mounted before Postgres initialises its data directory, not after.
+
+**4. `--previous` is often useless on a crash loop (Step 12).** It fails with
+`unable to retrieve container logs` once the old container has been cleaned
+up. While the pod shows `Error`, plain `kubectl logs <pod>` is the crashed
+container's own output - that is where the real error is.
+
+**5. `envFrom` has a specific shape (Step 12).** Each `-` is ONE source, and
+each source is an object with a `name:` field. Two sources means two list
+items, not two keys under one item.
+
+**6. The Go client hung with `DeadlineExceeded` while grpcurl worked (Step
+14).** grpc-go's `dns` resolver also asks the network's DNS server for a TXT
+record (`_grpc_config.localhost`) and waits for it before connecting. The home
+router never answered, so the 5s deadline passed before any connection was
+attempted. Fixed with `grpc.WithDisableServiceConfig()` in `cmd/client`.
+
+**7. `port-forward` binds to ONE pod, not the Service (Steps 14, 17, 18).** It
+dies with `lost connection to pod` whenever that pod is replaced, and it never
+spreads load across replicas.
+
+**8. `kubectl describe pod -l <label>` prints no Events when it matches several
+pods (Step 15).** Use `kubectl get events --field-selector reason=Unhealthy
+--sort-by=.lastTimestamp`, or describe one pod by name.
+
+**9. readiness and liveness proved themselves (Step 15).** Pointing readiness
+at a wrong port left the pod `Running 0/1` with `Restart Count: 0`, emptied its
+endpoints, and stalled the rollout while the old pod kept serving. Doing the
+same to liveness made the restart count climb instead. That is the whole
+difference in one experiment.
+
+**10. `DB_MAX_CONNS` is per pod (Step 17).** Settled on `20`: three replicas
+use 60 connections, and the fourth pod that exists briefly during a rolling
+update takes it to 80 - still under the 97 that `max_connections=100` leaves
+after the 3 reserved for superusers. Pools are also lazy, so at rest
+`pg_stat_activity` shows almost nothing; the ceiling only matters under load.
+
+**11. gRPC balances per connection, not per request (Steps 13 and 17).** One
+client connection means one pod does all the work. Watch which pod answers
+with `kubectl logs -l app=crm-server --prefix -f`, and send requests from
+inside the cluster to see them spread.
+
+**12. The namespace resets after `minikube start`.** kubectl goes back to
+`default`, and objects in `crm` appear to have vanished. Re-run
+`kubectl config set-context --current --namespace=crm`.
+
+**13. `kubectl scale` and `kubectl rollout undo` change the cluster, not the
+files.** The next `kubectl apply` silently undoes them. The YAML is the source
+of truth; use those commands for experiments and emergencies only.
+
+**14. minikube's metrics-server is off by default (Step 19).** `kubectl top`
+fails with `Metrics API not available` until
+`minikube addons enable metrics-server`.
+
+**15. The Go runtime does not see container limits (Step 19).** It sizes itself
+for the whole node - 12 CPUs here - so `GOMAXPROCS` and `GOMEMLIMIT` have to be
+set alongside `resources`, and updated whenever those limits change.
