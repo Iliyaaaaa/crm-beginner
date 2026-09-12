@@ -72,3 +72,25 @@ data:
   LOG_BATCH_SIZE: "500"
   LOG_FLUSH_INTERVAL: "2s"
   LOG_BUFFER_SIZE: "10000"
+
+  # --- Go runtime, aligned with the container's resources ------------------
+  #
+  # Unlike every key above, these two are NOT read by internal/config. The Go
+  # runtime itself reads them, which is why they can be set without touching
+  # any code.
+  #
+  # Both exist because the Go runtime looks at the NODE, not at the container's
+  # limits: on this 12-core node it would otherwise assume 12 CPUs and all the
+  # node's memory, while the container is allowed far less.
+
+  # Matches limits.cpu: 500m. Without it, Go sizes its scheduler and garbage
+  # collector for 12 cores, creating far more parallel work than the quota
+  # allows, which the kernel then throttles. Must be a whole number >= 1.
+  GOMAXPROCS: "1"
+
+  # A soft ceiling for the heap, ~80% of limits.memory: 256Mi. Go's GC normally
+  # waits for pressure from the OS, which never arrives in time inside a
+  # cgroup - the container is simply OOMKilled instead. With this set, the GC
+  # works harder as the heap approaches the number and stays under the limit.
+  # Soft means the GC tries; it never kills the process itself.
+  GOMEMLIMIT: "200MiB"

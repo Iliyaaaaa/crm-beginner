@@ -64,3 +64,27 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 2
             failureThreshold: 3
+
+          # requests and limits do two different jobs. requests is what the
+          # scheduler reserves when choosing a node; limits is the ceiling
+          # enforced while the container runs.
+          #
+          # The two resources behave differently at the ceiling: going over the
+          # CPU limit only throttles the container, while going over the memory
+          # limit KILLS it (OOMKilled) - memory already handed out cannot be
+          # taken back. So the memory limit is the one to keep generous.
+          #
+          # Setting these also moves the pod out of the BestEffort QoS class,
+          # which is the class the kubelet evicts FIRST when a node runs short
+          # of memory. With requests below limits the pod becomes Burstable.
+          #
+          # Starting values for a small Go service; measure with `kubectl top
+          # pods` (needs `minikube addons enable metrics-server`) at idle and
+          # under load, then adjust.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
