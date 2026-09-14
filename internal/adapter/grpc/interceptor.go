@@ -9,6 +9,7 @@ import (
 	// This package is itself named "grpc", so the library has to be aliased.
 	grpclib "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 )
 
@@ -20,6 +21,18 @@ import (
 // signatures differ: a unary handler returns a response, a stream handler
 // returns only an error. That means each concern is written twice, once per
 // shape. It is a little repetitive and it is how the library works.
+
+// isHealthCheck reports whether method belongs to the standard gRPC health
+// service - the one the Kubernetes probes call.
+func isHealthCheck(method string) bool {
+	switch method {
+	case healthpb.Health_Check_FullMethodName,
+		healthpb.Health_List_FullMethodName,
+		healthpb.Health_Watch_FullMethodName:
+		return true
+	}
+	return false
+}
 
 // LoggingUnaryInterceptor logs one line per completed call: method, resulting
 // status code, and how long it took.
@@ -35,6 +48,13 @@ func LoggingUnaryInterceptor(
 ) (any, error) {
 	start := time.Now()
 	resp, err := handler(ctx, req)
+
+	// The probes call the health service every few seconds, per pod: logged,
+	// the successful calls made up nearly every line of output and buried the
+	// real ones. A FAILING health check is still logged - that one matters.
+	if err == nil && isHealthCheck(info.FullMethod) {
+		return resp, err
+	}
 
 	// status.Code maps a nil error to OK, so this reports success and failure
 	// in the same line.
@@ -52,6 +72,10 @@ func LoggingStreamInterceptor(
 ) error {
 	start := time.Now()
 	err := handler(srv, ss)
+
+	if err == nil && isHealthCheck(info.FullMethod) {
+		return err
+	}
 
 	log.Printf("%s %s %s (stream)", info.FullMethod, status.Code(err), time.Since(start).Round(time.Microsecond))
 	return err
