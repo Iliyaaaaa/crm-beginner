@@ -1,0 +1,15 @@
+# The node-level log collector (see internal/logagent). Same two-stage shape as
+# the server's Dockerfile - a throwaway build stage with the Go toolchain, then
+# a tiny image holding only the static binary - but building ./cmd/log-agent.
+FROM golang:1-bookworm AS build
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/log-agent ./cmd/log-agent
+
+FROM alpine:3.20
+COPY --from=build /out/log-agent /log-agent
+ENTRYPOINT ["/log-agent"]

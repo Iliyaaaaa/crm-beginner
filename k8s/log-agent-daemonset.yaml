@@ -1,0 +1,84 @@
+# log-agent: the node-level log collector - one pod per node.
+#
+# Applications need no change at all. Whatever a container writes to stdout or
+# stderr, the container runtime already saves on the node under
+# /var/log/containers. This DaemonSet reads those files and ships every line
+# into crm-server's LogService.IngestLogs, so the logs land in the Postgres
+# `logs` table through the same batching pipeline as any other client's.
+#
+# A DaemonSet, not a Deployment: the files live on each node's own disk, so the
+# collector has to run once on EVERY node. A new node gets its own copy
+# automatically.
+apiVersion: apps/v1
+kind: DaemonSet
+
+metadata:
+  name: log-agent
+  labels:
+    app: log-agent
+
+spec:
+  selector:
+    matchLabels:
+      app: log-agent
+
+  template:
+    metadata:
+      labels:
+        app: log-agent
+
+    spec:
+      containers:
+        # The name must match SELF_CONTAINER below: the agent skips its own
+        # log lines, because shipping them would log more shipping, forever.
+        - name: log-agent
+          image: crm-log-agent:v1
+          imagePullPolicy: IfNotPresent
+
+          env:
+            - name: INGEST_ADDR
+              value: "crm-server:50051"
+            - name: LOG_NAMESPACE
+              value: "crm"
+            - name: SELF_CONTAINER
+              value: "log-agent"
+            # Aligned with the limits below, for the same reason as crm-server:
+            # the Go runtime sees the node, not the container.
+            - name: GOMAXPROCS
+              value: "1"
+            - name: GOMEMLIMIT
+              value: "100MiB"
+
+          volumeMounts:
+            # Read-only: the agent only reads. It needs all of /var/log, not just
+            # /var/log/containers - the files there are symlinks into
+            # /var/log/pods, and a symlink is useless without its target.
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            # Where the agent remembers how far each file has been shipped. On
+            # the node rather than in the pod, so it survives the pod being
+            # replaced and a restart resumes instead of shipping everything again.
+            - name: positions
+              mountPath: /var/lib/crm-log-agent
+
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+
+          # No runAsNonRoot here, deliberately: /var/log/pods on the node is
+          # readable only by root. That is the price of a node agent - it can read
+          # every pod's logs on the node - and why its log mount is read-only.
+
+      volumes:
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: positions
+          hostPath:
+            path: /var/lib/crm-log-agent
+            type: DirectoryOrCreate
