@@ -16,17 +16,19 @@ The mental shift that makes all of it make sense:
 
 **Status: Parts A-D are done.** The service runs on minikube with Redis,
 Postgres, config, secrets, probes, 3 replicas, rolling updates and resource
-limits. Part E is optional. Everything that went wrong on the way is collected
+limits. Part E is optional; its first step, the gRPC health service, is done.
+Everything that went wrong on the way is collected
 at the end, under "Gotchas actually hit".
 
 ---
 
 # Three facts about THIS project that shape the plan
 
-1. **No gRPC health service is registered** in the Go code, so Kubernetes'
-   native `grpc:` probes cannot be used yet - they would fail every check and
-   put the pod in a restart loop. Steps 15 uses TCP probes instead; Part E
-   fixes it properly.
+1. **No gRPC health service was registered** in the Go code at first, so
+   Kubernetes' native `grpc:` probes could not be used - they would have failed
+   every check and put the pod in a restart loop. Step 15 therefore started
+   with TCP probes. *Done since:* Part E's first step registered the service
+   and switched both probes to `grpc:`.
 
 2. **Migrations run through Postgres's `docker-entrypoint-initdb.d`**, which
    in compose is a bind mount from the laptop. There is no laptop in a
@@ -295,6 +297,10 @@ probe would fail every check and Kubernetes would kill the pod in a restart
 loop. TCP proves the port accepts connections, which is a reasonable first
 approximation. Part E fixes this properly.
 
+> **Update - replaced in Part E:** the app now registers `grpc.health.v1.Health`
+> and both probes are `grpc:` on port `50051`. The port is a number on purpose:
+> gRPC probes do not support named ports, so `port: grpc` is rejected.
+
 **Understand the difference:**
 
 | Probe | Question | On failure |
@@ -374,8 +380,8 @@ Only after Parts A-D work. Roughly in order of value:
 
 | Topic | What it adds | Ties back to |
 | --- | --- | --- |
-| gRPC health service | register `grpc.health.v1` in Go, switch probes to native `grpc:` | fixes the Step 15 compromise |
-| Fluent Bit sidecar | a second container in the pod shipping logs | the sidecar pattern |
+| ✅ gRPC health service | register `grpc.health.v1` in Go, switch probes to native `grpc:`, report `NOT_SERVING` on shutdown | fixes the Step 15 compromise |
+| Log collector ("vacuum") | a DaemonSet that reads every pod's stdout/stderr from the node's `/var/log/containers`, with no change to the app | the log pipeline |
 | HorizontalPodAutoscaler | auto-scale replicas on CPU | Step 17's math, automated |
 | Ingress | real external access | replaces Step 14's port-forward |
 | Kustomize or Helm | manage all the YAML as one unit, dev/prod variants | once there are ~10 manifests |
@@ -492,3 +498,27 @@ fails with `Metrics API not available` until
 **15. The Go runtime does not see container limits (Step 19).** It sizes itself
 for the whole node - 12 CPUs here - so `GOMAXPROCS` and `GOMEMLIMIT` have to be
 set alongside `resources`, and updated whenever those limits change.
+
+**16. gRPC probes do not support named ports (Part E).** `tcpSocket` and
+`httpGet` accept `port: grpc`, but a `grpc:` probe must use the number `50051`
+or the manifest is rejected.
+
+**17. `GracefulStop` waits forever on streams that never end (Part E).** With a
+client holding a health `Watch` stream open, deleting a pod took 31s: the drain
+never finished, Kubernetes sent SIGKILL at the end of its grace period, `Close`
+never ran, and the ingester never drained - buffered log entries would have
+been lost. A long-lived `IngestLogs` stream would do the same. Fixed by
+bounding the drain to 10s and then calling `Stop`; the same test then took 11s
+and ended with `ingester stopped, all workers drained`.
+
+**18. Health probes flooded the logs (Part E).** The logging interceptor printed
+every probe call - 90 of every 90 log lines, about 18 a minute per pod.
+Successful health checks are no longer logged; failing ones still are.
+
+**19. Never rebuild an existing image tag.** Rebuilding `v3` from newer code
+made `v3` and `v4` the same image, so `v3` no longer means what the rollout
+history says it means: a `kubectl rollout undo` to that revision would run the
+new code. Every build gets a new tag.
+
+**20. `custom-columns` with `[0]` needs single quotes in zsh.** Unquoted, zsh
+treats `[0]` as a filename pattern and fails with `no matches found`.
