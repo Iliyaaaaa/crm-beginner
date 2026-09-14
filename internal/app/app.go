@@ -16,9 +16,12 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 
 	grpcadapter "github.com/iliya/crm-service/internal/adapter/grpc"
@@ -47,6 +50,10 @@ type App struct {
 	logRepo  *postgres.LogRepository
 	ingester *ingest.Ingester
 	grpcSrv  *grpc.Server
+	// health serves the standard grpc.health.v1.Health service, which is what
+	// the Kubernetes grpc probes call. Kept on App so Run can report
+	// NOT_SERVING when shutdown begins.
+	health   *health.Server
 	listener net.Listener
 }
 
@@ -117,6 +124,13 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	logpb.RegisterLogServiceServer(a.grpcSrv, logHandler)
 	reflection.Register(a.grpcSrv)
 
+	// NewServer reports the overall service (the empty name "") as SERVING
+	// from the start. That is correct here rather than optimistic: every
+	// dependency above has already connected, and nothing can reach this
+	// server until Run starts serving.
+	a.health = health.NewServer()
+	healthpb.RegisterHealthServer(a.grpcSrv, a.health)
+
 	lis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
 		a.Close()
@@ -125,6 +139,36 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	a.listener = lis
 
 	return a, nil
+}
+
+// drainTimeout bounds GracefulStop. GracefulStop waits for EVERY open RPC to
+// finish, and some never finish on their own: a client watching the health
+// service, or a long-lived IngestLogs stream. Without a bound, one such client
+// holds shutdown open until Kubernetes kills the process at the end of its
+// 30-second grace period - and that SIGKILL skips Close entirely, so the
+// ingester never drains and buffered log entries are lost. 10s leaves the rest
+// of that window for Close to flush them.
+const drainTimeout = 10 * time.Second
+
+// stopGracefully drains srv and falls back to a hard Stop once timeout passes.
+// It reports whether that fallback was needed.
+func stopGracefully(srv *grpc.Server, timeout time.Duration) (forced bool) {
+	done := make(chan struct{})
+	go func() {
+		srv.GracefulStop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return false
+	case <-time.After(timeout):
+		// Stop closes every connection and cancels the RPCs still running,
+		// which also makes the GracefulStop call above return.
+		srv.Stop()
+		<-done
+		return true
+	}
 }
 
 // Run serves until ctx is cancelled or the server fails. On cancellation it
@@ -144,10 +188,19 @@ func (a *App) Run(ctx context.Context) error {
 		return fmt.Errorf("serve: %w", err)
 	case <-ctx.Done():
 		log.Println("shutdown signal received, draining...")
-		// GracefulStop stops accepting new connections and waits for in-flight
-		// RPCs to finish. It also closes the listener.
-		a.grpcSrv.GracefulStop()
-		log.Println("stopped cleanly")
+		// Report NOT_SERVING before draining, so anything checking health - a
+		// probe mid-cycle, or a client that watches the health service to pick
+		// where to send requests - stops routing here while in-flight RPCs
+		// finish. Shutdown also ignores later status changes, so nothing can
+		// flip it back to SERVING part-way through the drain.
+		a.health.Shutdown()
+		// Stop accepting new connections and let in-flight RPCs finish - but
+		// only for so long; see drainTimeout.
+		if stopGracefully(a.grpcSrv, drainTimeout) {
+			log.Printf("drain did not finish within %s, closed the remaining streams", drainTimeout)
+		} else {
+			log.Println("stopped cleanly")
+		}
 		return nil
 	}
 }

@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
         - name: crm-server
-          image: crm-service:v1
+          image: crm-service:v5
 
           imagePullPolicy: IfNotPresent
 
@@ -41,13 +41,16 @@ spec:
           # makes a rolling update zero-downtime: an old pod is only removed
           # once the new one reports ready.
           #
-          # tcpSocket, not grpc: a native grpc probe needs the app to register
-          # the standard grpc.health.v1.Health service, which this code does
-          # not do yet, so that probe would fail every check and restart a
-          # healthy pod. TCP only proves the port accepts connections.
+          # A native grpc probe calls the app's grpc.health.v1.Health service,
+          # so the answer comes from the gRPC layer itself rather than from a
+          # TCP port merely being open - and it turns NOT_SERVING the moment
+          # shutdown begins.
+          #
+          # The port must be the NUMBER. Unlike tcpSocket and httpGet, grpc
+          # probes do not support named ports, so `port: grpc` is rejected.
           readinessProbe:
-            tcpSocket:
-              port: grpc
+            grpc:
+              port: 50051
             initialDelaySeconds: 3
             periodSeconds: 5
             timeoutSeconds: 2
@@ -58,8 +61,8 @@ spec:
           # healthy pods that are merely busy, moving their traffic onto the
           # remaining pods until the whole service collapses one pod at a time.
           livenessProbe:
-            tcpSocket:
-              port: grpc
+            grpc:
+              port: 50051
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 2
